@@ -134,6 +134,13 @@
               "add": "添加",
               "addNew": "添加新隧道"
             }
+          },
+          "fragment": {
+            "title": "数据包分片",
+            "subtitle": "通过分片 TLS Hello 绕过 DPI 阻断",
+            "packets": "数据包 (Packets)",
+            "length": "长度 (Length)",
+            "interval": "间隔 (Interval)"
           }
         },
         "tooltips": {

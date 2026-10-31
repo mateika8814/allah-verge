@@ -92,6 +92,18 @@ pub struct IVerge {
     /// Initial DNS override preference for profiles without a saved setting.
     pub enable_dns_settings: Option<bool>,
 
+    /// Bypass DPI via TLS hello packet fragmentation
+    pub enable_fragment: Option<bool>,
+
+    #[specta(type = Option<std::string::String>)]
+    pub fragment_packets: Option<String>,
+
+    #[specta(type = Option<std::string::String>)]
+    pub fragment_length: Option<String>,
+
+    #[specta(type = Option<std::string::String>)]
+    pub fragment_interval: Option<String>,
+
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[specta(type = std::collections::BTreeMap<std::string::String, super::dns::ProfileDnsSettings>)]
     pub profile_dns_settings: std::collections::BTreeMap<String, super::dns::ProfileDnsSettings>,
@@ -382,6 +394,10 @@ impl IVerge {
             enable_hover_jump_navigator: Some(true),
             hover_jump_navigator_delay: Some(280),
             enable_system_proxy: Some(false),
+            enable_fragment: Some(false),
+            fragment_packets: Some("tlshello".into()),
+            fragment_length: Some("100-200".into()),
+            fragment_interval: Some("10-20".into()),
             proxy_auto_config: Some(false),
             pac_file_content: Some(DEFAULT_PAC.into()),
             proxy_host: Some("127.0.0.1".into()),

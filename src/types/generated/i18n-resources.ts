@@ -1264,6 +1264,13 @@ export interface TranslationResources {
               clashCore: string
               dnsOverwrite: string
               external: string
+              fragment: {
+                interval: string
+                length: string
+                packets: string
+                subtitle: string
+                title: string
+              }
               ipv6: string
               logLevel: string
               openUwpTool: string
@@ -1589,6 +1596,7 @@ export interface TranslationResources {
           noDisney: string
           originalsOnly: string
           pending: string
+          risky: string
           unsupportedRegion: string
           yes: string
         }

@@ -134,6 +134,13 @@
               "add": "Добавить",
               "addNew": "Добавить новый туннель"
             }
+          },
+          "fragment": {
+            "title": "Фрагментирование",
+            "subtitle": "Обход DPI через фрагментацию пакетов",
+            "packets": "Packets",
+            "length": "Length",
+            "interval": "Interval"
           }
         },
         "tooltips": {

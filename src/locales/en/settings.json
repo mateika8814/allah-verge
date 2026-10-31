@@ -134,6 +134,13 @@
               "add": "Add",
               "addNew": "Add New Tunnel"
             }
+          },
+          "fragment": {
+            "title": "Fragmentation",
+            "subtitle": "Bypass DPI via packet fragmentation",
+            "packets": "Packets",
+            "length": "Length",
+            "interval": "Interval"
           }
         },
         "tooltips": {

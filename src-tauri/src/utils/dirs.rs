@@ -9,7 +9,7 @@ use std::{
 use tauri::Manager as _;
 
 #[cfg(not(feature = "verge-dev"))]
-pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev";
+pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev.fork";
 #[cfg(not(feature = "verge-dev"))]
 pub static BACKUP_DIR: &str = "clash-verge-rev-backup";
 
@@ -26,6 +26,15 @@ pub static UPDATE_INTERVAL_MIGRATED: &str = ".update-interval-migrated";
 
 /// Uses the same platform data resolver as Tauri, including before its handle exists.
 pub fn app_home_dir() -> Result<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            if parent.join(".portable").exists() {
+                let local_data = parent.join(".config").join(APP_ID);
+                let _ = std::fs::create_dir_all(&local_data);
+                return Ok(local_data);
+            }
+        }
+    }
     ::dirs::data_dir()
         .map(|root| root.join(APP_ID))
         .ok_or_else(|| anyhow::anyhow!("Failed to get the app home directory"))

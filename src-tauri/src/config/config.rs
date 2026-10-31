@@ -238,6 +238,7 @@ impl Config {
 
         resolve_provider_path_conflicts(&mut config, &dirs::app_home_dir()?)?;
         sanitize_tunnels_proxy(&mut config);
+        apply_fragment_config(&mut config).await;
         // Apply only to generated core config so the saved choice survives the next launch.
         if let Some(port) = MixedPort::session_fallback() {
             config.insert(MIXED_PORT_KEY.into(), port.into());
@@ -365,6 +366,53 @@ fn collect_names(config: &Mapping, list_key: &str, out: &mut HashSet<String>) {
             && !n.is_empty()
         {
             out.insert(n.into());
+        }
+    }
+}
+
+async fn apply_fragment_config(config: &mut Mapping) {
+    let verge = Config::verge().await.latest();
+    if verge.enable_fragment != Some(true) {
+        return;
+    }
+
+    let packets = verge.fragment_packets.as_deref().unwrap_or("tlshello");
+    let length = verge.fragment_length.as_deref().unwrap_or("100-200");
+    let interval = verge.fragment_interval.as_deref().unwrap_or("10-20");
+
+    let mut frag_map = Mapping::new();
+    frag_map.insert(Value::String("packets".into()), Value::String(packets.into()));
+    frag_map.insert(Value::String("length".into()), Value::String(length.into()));
+    frag_map.insert(Value::String("interval".into()), Value::String(interval.into()));
+
+    // 1. Inject tcp-fragment into all proxies in the profile
+    if let Some(proxies) = config.get_mut("proxies").and_then(|v| v.as_sequence_mut()) {
+        for p in proxies.iter_mut() {
+            if let Some(map) = p.as_mapping_mut() {
+                if !map.contains_key("tcp-fragment") {
+                    map.insert(Value::String("tcp-fragment".into()), Value::Mapping(frag_map.clone()));
+                }
+            }
+        }
+    }
+
+    // 2. Add dedicated direct fragment proxy
+    let mut frag_direct = Mapping::new();
+    frag_direct.insert(Value::String("name".into()), Value::String("Fragment-TLS-Hello".into()));
+    frag_direct.insert(Value::String("type".into()), Value::String("direct".into()));
+    frag_direct.insert(Value::String("tcp-fragment".into()), Value::Mapping(frag_map));
+
+    let proxies_val = config.entry(Value::String("proxies".into()))
+        .or_insert_with(|| Value::Sequence(Vec::new()));
+    if let Some(seq) = proxies_val.as_sequence_mut() {
+        let exists = seq.iter().any(|item| {
+            item.as_mapping()
+                .and_then(|m| m.get("name"))
+                .and_then(|n| n.as_str())
+                == Some("Fragment-TLS-Hello")
+        });
+        if !exists {
+            seq.push(Value::Mapping(frag_direct));
         }
     }
 }
