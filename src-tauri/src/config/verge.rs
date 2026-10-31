@@ -510,6 +510,12 @@ impl IVerge {
         patch!(verge_port);
         patch!(verge_http_enabled);
         patch!(enable_system_proxy);
+        patch!(enable_fragment);
+        patch!(fragment_mode);
+        patch!(fragment_length);
+        patch!(fragment_interval);
+        patch!(fragment_record_fragment);
+        patch!(fragment_apply_all);
         patch!(enable_proxy_guard);
         patch!(enable_bypass_check);
         patch!(use_default_bypass);
