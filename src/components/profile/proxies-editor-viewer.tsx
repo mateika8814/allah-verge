@@ -28,6 +28,7 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import { BaseSearchBox, MonacoEditor } from '@/components/base'
+import { ProxyFragmentDialog } from '@/components/profile/proxy-fragment-dialog'
 import { ProxyItem } from '@/components/profile/proxy-item'
 import { readProfileFile, saveProfileFile } from '@/services/cmds'
 import { mutate } from '@/services/mutate'
@@ -80,6 +81,10 @@ export const ProxiesEditorViewer = (props: Props) => {
   const [visualization, setVisualization] = useState(true)
   const [match, setMatch] = useState(() => (_: string) => true)
   const [proxyUri, setProxyUri] = useState<string>('')
+  const [editingFragmentProxy, setEditingFragmentProxy] = useState<{
+    proxy: IProxyConfig
+    category: 'original' | 'prepend' | 'append'
+  } | null>(null)
 
   const [proxyList, setProxyList] = useState<IProxyConfig[]>([])
   const [prependSeq, setPrependSeq] = useState<IProxyConfig[]>([])
@@ -128,6 +133,9 @@ export const ProxiesEditorViewer = (props: Props) => {
               setDeleteSeq((prev) => [...prev, item.name])
             }
           }}
+          onEditFragment={() => {
+            setEditingFragmentProxy({ proxy: item, category: 'original' })
+          }}
         />
       )
     }
@@ -140,6 +148,9 @@ export const ProxiesEditorViewer = (props: Props) => {
           onDelete={() => {
             setPrependSeq(prependSeq.filter((v) => v.name !== item.name))
           }}
+          onEditFragment={() => {
+            setEditingFragmentProxy({ proxy: item, category: 'prepend' })
+          }}
         />
       )
     }
@@ -150,6 +161,9 @@ export const ProxiesEditorViewer = (props: Props) => {
         proxy={item}
         onDelete={() => {
           setAppendSeq(appendSeq.filter((v) => v.name !== item.name))
+        }}
+        onEditFragment={() => {
+          setEditingFragmentProxy({ proxy: item, category: 'append' })
         }}
       />
     )
@@ -491,6 +505,28 @@ export const ProxiesEditorViewer = (props: Props) => {
           {t('shared.actions.save')}
         </Button>
       </DialogActions>
+
+      <ProxyFragmentDialog
+        open={Boolean(editingFragmentProxy)}
+        proxy={editingFragmentProxy?.proxy ?? null}
+        onClose={() => setEditingFragmentProxy(null)}
+        onSave={(updated) => {
+          if (!editingFragmentProxy) return
+          const { category, proxy } = editingFragmentProxy
+          if (category === 'original') {
+            setPrependSeq((prev) => [updated, ...prev.filter((p) => p.name !== updated.name)])
+            setDeleteSeq((prev) => (prev.includes(proxy.name) ? prev : [...prev, proxy.name]))
+          } else if (category === 'prepend') {
+            setPrependSeq((prev) =>
+              prev.map((p) => (p.name === proxy.name ? updated : p)),
+            )
+          } else if (category === 'append') {
+            setAppendSeq((prev) =>
+              prev.map((p) => (p.name === proxy.name ? updated : p)),
+            )
+          }
+        }}
+      />
     </Dialog>
   )
 }

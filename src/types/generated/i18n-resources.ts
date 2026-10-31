@@ -413,6 +413,25 @@ export interface TranslationResources {
             append: string
             prepend: string
           }
+          fragmentDialog: {
+            cancel: string
+            enabled: string
+            errors: {
+              invalidInterval: string
+              invalidLength: string
+            }
+            interval: string
+            length: string
+            mode: string
+            modeRandom: string
+            modeSni: string
+            notTls: string
+            recordFragment: string
+            recordFragmentDesc: string
+            save: string
+            subtitle: string
+            title: string
+          }
           placeholders: {
             multiUri: string
           }
@@ -1265,9 +1284,22 @@ export interface TranslationResources {
               dnsOverwrite: string
               external: string
               fragment: {
+                applyAll: string
+                applyAllDesc: string
+                errors: {
+                  invalidInterval: string
+                  invalidLength: string
+                  stockCoreWarning: string
+                }
                 interval: string
                 length: string
-                packets: string
+                mode: string
+                modeRandom: string
+                modeSni: string
+                noticeDisabled: string
+                noticeEnabled: string
+                recordFragment: string
+                recordFragmentDesc: string
                 subtitle: string
                 title: string
               }

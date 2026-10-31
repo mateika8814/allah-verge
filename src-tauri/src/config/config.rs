@@ -370,49 +370,327 @@ fn collect_names(config: &Mapping, list_key: &str, out: &mut HashSet<String>) {
     }
 }
 
-async fn apply_fragment_config(config: &mut Mapping) {
-    let verge = Config::verge().await.latest();
-    if verge.enable_fragment != Some(true) {
-        return;
+/// Validate range format "N" or "N-M" (integers, N <= M, length >= 1, interval >= 0)
+pub fn validate_range(val: &str, is_interval: bool) -> bool {
+    let s = val.trim();
+    if s.is_empty() {
+        return false;
     }
-
-    let packets = verge.fragment_packets.as_deref().unwrap_or("tlshello");
-    let length = verge.fragment_length.as_deref().unwrap_or("100-200");
-    let interval = verge.fragment_interval.as_deref().unwrap_or("10-20");
-
-    let mut frag_map = Mapping::new();
-    frag_map.insert(Value::String("packets".into()), Value::String(packets.into()));
-    frag_map.insert(Value::String("length".into()), Value::String(length.into()));
-    frag_map.insert(Value::String("interval".into()), Value::String(interval.into()));
-
-    // 1. Inject tcp-fragment into all proxies in the profile
-    if let Some(proxies) = config.get_mut("proxies").and_then(|v| v.as_sequence_mut()) {
-        for p in proxies.iter_mut() {
-            if let Some(map) = p.as_mapping_mut() {
-                if !map.contains_key("tcp-fragment") {
-                    map.insert(Value::String("tcp-fragment".into()), Value::Mapping(frag_map.clone()));
-                }
+    let parts: Vec<&str> = s.split('-').map(|p| p.trim()).collect();
+    if parts.len() == 1 {
+        if let Ok(n) = parts[0].parse::<u32>() {
+            if is_interval {
+                return true;
+            } else {
+                return n >= 1;
             }
         }
+        return false;
+    } else if parts.len() == 2 {
+        if let (Ok(n1), Ok(n2)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+            if is_interval {
+                return n1 <= n2;
+            } else {
+                return n1 >= 1 && n1 <= n2;
+            }
+        }
+        return false;
+    }
+    false
+}
+
+/// Determine whether a proxy node utilizes TLS
+pub fn is_tls_proxy(proxy: &Mapping) -> bool {
+    let p_type = proxy
+        .get(Value::String("type".into()))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match p_type.as_str() {
+        "trojan" | "anytls" | "tuic" | "hysteria" | "hysteria2" => true,
+        "vless" => {
+            let security = proxy
+                .get(Value::String("security".into()))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if security == "none" {
+                false
+            } else {
+                let tls = proxy
+                    .get(Value::String("tls".into()))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                tls || security == "tls" || security == "reality" || proxy.contains_key("reality-opts") || security.is_empty()
+            }
+        }
+        "vmess" | "http" | "socks5" => {
+            let tls = proxy
+                .get(Value::String("tls".into()))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let security = proxy
+                .get(Value::String("security".into()))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            tls || security == "tls" || security == "reality"
+        }
+        "ss" | "shadowsocks" => {
+            if let Some(plugin) = proxy.get(Value::String("plugin".into())).and_then(|v| v.as_str()) {
+                if plugin.to_lowercase().contains("tls") {
+                    return true;
+                }
+            }
+            if let Some(opts) = proxy.get(Value::String("plugin-opts".into())).and_then(|v| v.as_mapping()) {
+                if opts.get(Value::String("tls".into())).and_then(|v| v.as_bool()).unwrap_or(false) {
+                    return true;
+                }
+                if let Some(mode) = opts.get(Value::String("mode".into())).and_then(|v| v.as_str()) {
+                    if mode.to_lowercase().contains("tls") {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => {
+            let tls = proxy
+                .get(Value::String("tls".into()))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let security = proxy
+                .get(Value::String("security".into()))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            tls || security == "tls" || security == "reality" || proxy.contains_key("reality-opts")
+        }
+    }
+}
+
+/// Apply fragment settings to core config.
+pub fn apply_fragment_to_config(config: &mut Mapping, verge: &IVerge) {
+    let global_enabled = verge.enable_fragment == Some(true);
+    let apply_all = verge.fragment_apply_all != Some(false);
+
+    let raw_mode = verge.fragment_mode.as_deref().unwrap_or("sni");
+    let global_mode = if raw_mode.eq_ignore_ascii_case("random") { "random" } else { "sni" };
+
+    let raw_length = verge.fragment_length.as_deref().unwrap_or("10-30");
+    let global_length = if validate_range(raw_length, false) { raw_length } else { "10-30" };
+
+    let raw_interval = verge.fragment_interval.as_deref().unwrap_or("1-5");
+    let global_interval = if validate_range(raw_interval, true) { raw_interval } else { "1-5" };
+
+    let global_record_fragment = verge.fragment_record_fragment.unwrap_or(false);
+
+    let Some(proxies) = config.get_mut("proxies").and_then(|v| v.as_sequence_mut()) else {
+        return;
+    };
+
+    for p in proxies.iter_mut() {
+        let Some(proxy) = p.as_mapping_mut() else {
+            continue;
+        };
+
+        if !is_tls_proxy(proxy) {
+            continue;
+        }
+
+        let frag_key = Value::String("fragment".into());
+
+        if let Some(frag_val) = proxy.get_mut(&frag_key) {
+            if let Some(frag_map) = frag_val.as_mapping_mut() {
+                let is_enabled = frag_map
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if !is_enabled {
+                    proxy.remove(&frag_key);
+                } else {
+                    let mode = frag_map
+                        .get("mode")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("sni")
+                        .to_lowercase();
+                    if mode == "random" {
+                        frag_map.insert(Value::String("mode".into()), Value::String("random".into()));
+                        let len_valid = frag_map
+                            .get("length")
+                            .and_then(|v| v.as_str())
+                            .map(|s| validate_range(s, false))
+                            .unwrap_or(false);
+                        if !len_valid {
+                            frag_map.insert(Value::String("length".into()), Value::String(global_length.into()));
+                        }
+                    } else {
+                        frag_map.insert(Value::String("mode".into()), Value::String("sni".into()));
+                        frag_map.remove("length");
+                    }
+
+                    let int_valid = frag_map
+                        .get("interval")
+                        .and_then(|v| v.as_str())
+                        .map(|s| validate_range(s, true))
+                        .unwrap_or(false);
+                    if !int_valid {
+                        frag_map.insert(Value::String("interval".into()), Value::String(global_interval.into()));
+                    }
+
+                    if !frag_map.contains_key("record-fragment") {
+                        frag_map.insert(Value::String("record-fragment".into()), Value::Bool(false));
+                    }
+                }
+            } else if frag_val.as_bool() == Some(false) {
+                proxy.remove(&frag_key);
+            }
+        } else if global_enabled && apply_all {
+            let mut frag_map = Mapping::new();
+            frag_map.insert(Value::String("enabled".into()), Value::Bool(true));
+            frag_map.insert(Value::String("mode".into()), Value::String(global_mode.into()));
+            if global_mode == "random" {
+                frag_map.insert(Value::String("length".into()), Value::String(global_length.into()));
+            }
+            frag_map.insert(Value::String("interval".into()), Value::String(global_interval.into()));
+            frag_map.insert(Value::String("record-fragment".into()), Value::Bool(global_record_fragment));
+
+            proxy.insert(frag_key, Value::Mapping(frag_map));
+        }
+    }
+}
+
+async fn apply_fragment_config(config: &mut Mapping) {
+    let verge = Config::verge().await.latest();
+    apply_fragment_to_config(config, &verge);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_yaml_ng::Value;
+
+    #[test]
+    fn test_validate_range() {
+        // Length checks (min >= 1, N <= M)
+        assert!(validate_range("10-30", false));
+        assert!(validate_range("1-1", false));
+        assert!(validate_range("50", false));
+        assert!(!validate_range("0-30", false));
+        assert!(!validate_range("0", false));
+        assert!(!validate_range("30-10", false));
+        assert!(!validate_range("abc", false));
+        assert!(!validate_range("", false));
+        assert!(!validate_range("-5", false));
+
+        // Interval checks (min >= 0, N <= M)
+        assert!(validate_range("0-5", true));
+        assert!(validate_range("0", true));
+        assert!(validate_range("1-5", true));
+        assert!(validate_range("10", true));
+        assert!(!validate_range("5-1", true));
+        assert!(!validate_range("-1", true));
+        assert!(!validate_range("xyz", true));
     }
 
-    // 2. Add dedicated direct fragment proxy
-    let mut frag_direct = Mapping::new();
-    frag_direct.insert(Value::String("name".into()), Value::String("Fragment-TLS-Hello".into()));
-    frag_direct.insert(Value::String("type".into()), Value::String("direct".into()));
-    frag_direct.insert(Value::String("tcp-fragment".into()), Value::Mapping(frag_map));
+    #[test]
+    fn test_is_tls_proxy() {
+        let mut vless = Mapping::new();
+        vless.insert(Value::String("type".into()), Value::String("vless".into()));
+        assert!(is_tls_proxy(&vless));
 
-    let proxies_val = config.entry(Value::String("proxies".into()))
-        .or_insert_with(|| Value::Sequence(Vec::new()));
-    if let Some(seq) = proxies_val.as_sequence_mut() {
-        let exists = seq.iter().any(|item| {
-            item.as_mapping()
-                .and_then(|m| m.get("name"))
-                .and_then(|n| n.as_str())
-                == Some("Fragment-TLS-Hello")
-        });
-        if !exists {
-            seq.push(Value::Mapping(frag_direct));
-        }
+        let mut vless_none = Mapping::new();
+        vless_none.insert(Value::String("type".into()), Value::String("vless".into()));
+        vless_none.insert(Value::String("security".into()), Value::String("none".into()));
+        assert!(!is_tls_proxy(&vless_none));
+
+        let mut trojan = Mapping::new();
+        trojan.insert(Value::String("type".into()), Value::String("trojan".into()));
+        assert!(is_tls_proxy(&trojan));
+
+        let mut vmess_plain = Mapping::new();
+        vmess_plain.insert(Value::String("type".into()), Value::String("vmess".into()));
+        assert!(!is_tls_proxy(&vmess_plain));
+
+        let mut vmess_tls = Mapping::new();
+        vmess_tls.insert(Value::String("type".into()), Value::String("vmess".into()));
+        vmess_tls.insert(Value::String("tls".into()), Value::Bool(true));
+        assert!(is_tls_proxy(&vmess_tls));
+
+        let mut direct = Mapping::new();
+        direct.insert(Value::String("type".into()), Value::String("direct".into()));
+        assert!(!is_tls_proxy(&direct));
+    }
+
+    #[test]
+    fn test_apply_fragment_to_config_global_and_override() {
+        let mut verge = IVerge::default();
+        verge.enable_fragment = Some(true);
+        verge.fragment_mode = Some("sni".into());
+        verge.fragment_interval = Some("2-8".into());
+        verge.fragment_record_fragment = Some(true);
+        verge.fragment_apply_all = Some(true);
+
+        let mut config = Mapping::new();
+        let mut proxies = Vec::new();
+
+        // 1. TLS node without fragment -> should get global config
+        let mut node1 = Mapping::new();
+        node1.insert(Value::String("name".into()), Value::String("Node1".into()));
+        node1.insert(Value::String("type".into()), Value::String("trojan".into()));
+        proxies.push(Value::Mapping(node1));
+
+        // 2. Non-TLS node -> should not get fragment
+        let mut node2 = Mapping::new();
+        node2.insert(Value::String("name".into()), Value::String("Node2".into()));
+        node2.insert(Value::String("type".into()), Value::String("direct".into()));
+        proxies.push(Value::Mapping(node2));
+
+        // 3. TLS node with manual override (enabled: true, mode: random)
+        let mut node3 = Mapping::new();
+        node3.insert(Value::String("name".into()), Value::String("Node3".into()));
+        node3.insert(Value::String("type".into()), Value::String("vless".into()));
+        let mut node3_frag = Mapping::new();
+        node3_frag.insert(Value::String("enabled".into()), Value::Bool(true));
+        node3_frag.insert(Value::String("mode".into()), Value::String("random".into()));
+        node3_frag.insert(Value::String("length".into()), Value::String("20-40".into()));
+        node3_frag.insert(Value::String("interval".into()), Value::String("5-10".into()));
+        node3_frag.insert(Value::String("record-fragment".into()), Value::Bool(false));
+        node3.insert(Value::String("fragment".into()), Value::Mapping(node3_frag));
+        proxies.push(Value::Mapping(node3));
+
+        // 4. TLS node with explicit disabled override
+        let mut node4 = Mapping::new();
+        node4.insert(Value::String("name".into()), Value::String("Node4".into()));
+        node4.insert(Value::String("type".into()), Value::String("vless".into()));
+        let mut node4_frag = Mapping::new();
+        node4_frag.insert(Value::String("enabled".into()), Value::Bool(false));
+        node4.insert(Value::String("fragment".into()), Value::Mapping(node4_frag));
+        proxies.push(Value::Mapping(node4));
+
+        config.insert(Value::String("proxies".into()), Value::Sequence(proxies));
+
+        apply_fragment_to_config(&mut config, &verge);
+
+        let res_proxies = config.get("proxies").unwrap().as_sequence().unwrap();
+
+        // Node1 should have global sni fragment
+        let n1_frag = res_proxies[0].as_mapping().unwrap().get("fragment").unwrap().as_mapping().unwrap();
+        assert_eq!(n1_frag.get("enabled").unwrap().as_bool(), Some(true));
+        assert_eq!(n1_frag.get("mode").unwrap().as_str(), Some("sni"));
+        assert_eq!(n1_frag.get("interval").unwrap().as_str(), Some("2-8"));
+        assert_eq!(n1_frag.get("record-fragment").unwrap().as_bool(), Some(true));
+        assert!(!n1_frag.contains_key("length")); // SNI mode omits length
+
+        // Node2 should NOT have fragment
+        assert!(!res_proxies[1].as_mapping().unwrap().contains_key("fragment"));
+
+        // Node3 should preserve custom random fragment
+        let n3_frag = res_proxies[2].as_mapping().unwrap().get("fragment").unwrap().as_mapping().unwrap();
+        assert_eq!(n3_frag.get("mode").unwrap().as_str(), Some("random"));
+        assert_eq!(n3_frag.get("length").unwrap().as_str(), Some("20-40"));
+        assert_eq!(n3_frag.get("interval").unwrap().as_str(), Some("5-10"));
+
+        // Node4 had enabled: false -> fragment removed
+        assert!(!res_proxies[3].as_mapping().unwrap().contains_key("fragment"));
     }
 }

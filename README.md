@@ -114,6 +114,17 @@ uninstalled and the app starts in Sidecar mode. Use `pnpm dev:service` to
 explicitly install or update the isolated development service before launch,
 or `pnpm dev:sidecar` to force the unprivileged Sidecar workflow.
 
+
+## TLS ClientHello Fragmentation (DPI Bypass)
+
+This fork includes full support for TLS ClientHello packet and record fragmentation to bypass deep packet inspection (DPI / TSPU).
+
+### Features
+- **Node Editor**: Configure per-proxy TLS fragmentation (`enabled`, `mode: sni | random`, `length`, `interval`, `record-fragment`). Hidden for non-TLS proxies.
+- **Global Settings**: App settings (`Settings -> Clash Setting -> TLS Fragmentation`) with default values and "Apply to all TLS nodes" option.
+- **Core Contract**: Injects standard `fragment:` options into TLS nodes in runtime configuration when enabled.
+- **Custom Mihomo Core**: Compatible with our Mihomo core fork. Place custom binary at `sidecar/verge-mihomo-<target>.exe` or in portable root as `verge-mihomo.exe`.
+
 ## Contributions
 
 Issue and PR welcome!

@@ -341,6 +341,14 @@ type SudokuTableType = 'prefer_ascii' | 'prefer_entropy'
 type SudokuHttpMaskMode = 'legacy' | 'stream' | 'poll' | 'auto'
 type SudokuHttpMaskStrategy = 'random' | 'post' | 'websocket'
 // base
+interface IFragmentConfig {
+  enabled?: boolean
+  mode?: 'sni' | 'random'
+  length?: string
+  interval?: string
+  'record-fragment'?: boolean
+}
+
 interface IProxyBaseConfig {
   tfo?: boolean
   mptcp?: boolean
@@ -348,6 +356,7 @@ interface IProxyBaseConfig {
   'routing-mark'?: number
   'ip-version'?: 'dual' | 'ipv4' | 'ipv6' | 'ipv4-prefer' | 'ipv6-prefer'
   'dialer-proxy'?: string
+  fragment?: IFragmentConfig
 }
 // direct
 interface IProxyDirectConfig extends IProxyBaseConfig {

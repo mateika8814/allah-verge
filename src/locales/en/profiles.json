@@ -154,6 +154,25 @@
       "actions": {
         "prepend": "Prepend Proxy",
         "append": "Append Proxy"
+      },
+      "fragmentDialog": {
+        "title": "TLS Fragmentation",
+        "subtitle": "Configure ClientHello fragmentation for this node",
+        "enabled": "Enable TLS Fragmentation",
+        "mode": "Mode",
+        "modeSni": "SNI (Split by server_name)",
+        "modeRandom": "Random (Split by byte chunks)",
+        "length": "Length (bytes, min-max)",
+        "interval": "Interval (ms, min-max)",
+        "recordFragment": "Record Fragment",
+        "recordFragmentDesc": "Split TLS record into multiple records",
+        "save": "Save",
+        "cancel": "Cancel",
+        "notTls": "This proxy type does not use TLS handshake",
+        "errors": {
+          "invalidLength": "Invalid length range: format N-M (N ≤ M, min ≥ 1)",
+          "invalidInterval": "Invalid interval range: format N-M (N ≤ M, min ≥ 0)"
+        }
       }
     },
     "groupsEditor": {

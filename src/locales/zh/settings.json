@@ -136,11 +136,24 @@
             }
           },
           "fragment": {
-            "title": "数据包分片",
-            "subtitle": "通过分片 TLS Hello 绕过 DPI 阻断",
-            "packets": "数据包 (Packets)",
-            "length": "长度 (Length)",
-            "interval": "间隔 (Interval)"
+            "title": "TLS 分片 (DPI 绕过)",
+            "subtitle": "通过分片 TLS ClientHello 绕过 DPI 阻断",
+            "mode": "分片模式",
+            "modeSni": "SNI 域名分片",
+            "modeRandom": "随机字节分片",
+            "length": "分片长度 (字节, 最小-最大)",
+            "interval": "发送间隔 (毫秒, 最小-最大)",
+            "recordFragment": "TLS 记录分片 (Record Fragment)",
+            "recordFragmentDesc": "将单条 TLS 记录拆分为多条有效记录",
+            "applyAll": "应用于所有 TLS 节点",
+            "applyAllDesc": "默认应用于所有 TLS 节点（单节点设置优先）",
+            "noticeEnabled": "TLS 分片已启用",
+            "noticeDisabled": "TLS 分片已禁用",
+            "errors": {
+              "invalidLength": "无效长度范围: 格式 N-M (N ≤ M, 最小 ≥ 1)",
+              "invalidInterval": "无效间隔范围: 格式 N-M (N ≤ M, 最小 ≥ 0)",
+              "stockCoreWarning": "警告: 当前内核不支持 TLS 分片。请使用定制的 Mihomo 内核。"
+            }
           }
         },
         "tooltips": {

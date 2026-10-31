@@ -96,6 +96,9 @@ pub struct IVerge {
     pub enable_fragment: Option<bool>,
 
     #[specta(type = Option<std::string::String>)]
+    pub fragment_mode: Option<String>,
+
+    #[specta(type = Option<std::string::String>)]
     pub fragment_packets: Option<String>,
 
     #[specta(type = Option<std::string::String>)]
@@ -103,6 +106,10 @@ pub struct IVerge {
 
     #[specta(type = Option<std::string::String>)]
     pub fragment_interval: Option<String>,
+
+    pub fragment_record_fragment: Option<bool>,
+
+    pub fragment_apply_all: Option<bool>,
 
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[specta(type = std::collections::BTreeMap<std::string::String, super::dns::ProfileDnsSettings>)]
@@ -395,9 +402,12 @@ impl IVerge {
             hover_jump_navigator_delay: Some(280),
             enable_system_proxy: Some(false),
             enable_fragment: Some(false),
+            fragment_mode: Some("sni".into()),
             fragment_packets: Some("tlshello".into()),
-            fragment_length: Some("100-200".into()),
-            fragment_interval: Some("10-20".into()),
+            fragment_length: Some("10-30".into()),
+            fragment_interval: Some("1-5".into()),
+            fragment_record_fragment: Some(false),
+            fragment_apply_all: Some(true),
             proxy_auto_config: Some(false),
             pac_file_content: Some(DEFAULT_PAC.into()),
             proxy_host: Some("127.0.0.1".into()),
