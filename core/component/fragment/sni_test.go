@@ -114,3 +114,22 @@ func TestFindSNIOffset_Garbage(t *testing.T) {
 		}
 	}
 }
+
+
+func TestExtractSNI(t *testing.T) {
+	pkt := makeClientHello("fragment-logging.test.org", true)
+	sni := ExtractSNI(pkt)
+	if sni != "fragment-logging.test.org" {
+		t.Fatalf("ExtractSNI got %q, want %q", sni, "fragment-logging.test.org")
+	}
+
+	pktNoSNI := makeClientHello("", false)
+	sniNo := ExtractSNI(pktNoSNI)
+	if sniNo != "" {
+		t.Fatalf("ExtractSNI for no-SNI got %q, want empty", sniNo)
+	}
+
+	if ExtractSNI(nil) != "" {
+		t.Fatal("ExtractSNI(nil) should be empty")
+	}
+}

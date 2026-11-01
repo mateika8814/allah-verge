@@ -104,3 +104,12 @@ func FindSNIOffset(b []byte) (offset int, length int, ok bool) {
 
 	return 0, 0, false
 }
+
+// ExtractSNI extracts the server_name (SNI) string from a TLS ClientHello record if present.
+func ExtractSNI(b []byte) string {
+	offset, length, ok := FindSNIOffset(b)
+	if ok && offset >= 0 && offset+length <= len(b) {
+		return string(b[offset : offset+length])
+	}
+	return ""
+}

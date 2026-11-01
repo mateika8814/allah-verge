@@ -10,9 +10,12 @@ package fragment
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/metacubex/mihomo/log"
 )
 
 type fragConn struct {
@@ -36,6 +39,33 @@ func NewConn(c net.Conn, opt *Option) net.Conn {
 		Conn: c,
 		opt:  *opt,
 	}
+}
+
+// targetDesc returns a human-readable identifier for this connection (SNI + RemoteAddr).
+func (fc *fragConn) targetDesc(sni string) string {
+	remote := ""
+	if fc.Conn != nil && fc.Conn.RemoteAddr() != nil {
+		remote = fc.Conn.RemoteAddr().String()
+	}
+	if sni != "" && remote != "" {
+		return fmt.Sprintf("%s (%s)", sni, remote)
+	}
+	if sni != "" {
+		return sni
+	}
+	if remote != "" {
+		return remote
+	}
+	return "unknown"
+}
+
+// chunkLengths returns slice of byte lengths for a list of chunks.
+func chunkLengths(chunks [][]byte) []int {
+	res := make([]int, len(chunks))
+	for i, c := range chunks {
+		res[i] = len(c)
+	}
+	return res
 }
 
 // writeAll writes data in a loop, guaranteeing all bytes are written or returning an error.
@@ -81,9 +111,14 @@ func (fc *fragConn) onBufferTimeout() {
 	toWrite := fc.buf
 	fc.buf = nil
 
+	timeout := fc.opt.GetBufferTimeout()
+	target := fc.targetDesc("")
+	log.Warnln("[Fragment] [%s] WARNING: Buffer timeout (%v) reached with %d bytes, flushing as raw data", target, timeout, len(toWrite))
+
 	_, err := fc.writeAll(toWrite)
 	if err != nil {
 		fc.lastErr = err
+		log.Errorln("[Fragment] [%s] ERROR: Failed to flush buffer on timeout (%d bytes): %v", target, len(toWrite), err)
 	}
 }
 
@@ -122,12 +157,14 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 		if p[0] != 0x16 {
 			fc.fragmentDone = true
 			fc.stopTimer()
+			log.Debugln("[Fragment] [%s] Non-TLS stream detected (prefix: 0x%02x), bypassing fragmentation", fc.targetDesc(""), p[0])
 			return fc.Conn.Write(p)
 		}
 		// If at least 2 bytes are provided and byte 1 is not 0x03, this is not TLS.
 		if len(p) >= 2 && p[1] != 0x03 {
 			fc.fragmentDone = true
 			fc.stopTimer()
+			log.Debugln("[Fragment] [%s] Non-TLS stream detected (byte 1: 0x%02x != 0x03), bypassing fragmentation", fc.targetDesc(""), p[1])
 			return fc.Conn.Write(p)
 		}
 		// If exactly 1 byte was written (0x16), buffer it and wait for subsequent bytes.
@@ -148,6 +185,7 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 		fc.fragmentDone = true
 		toWrite := fc.buf
 		fc.buf = nil
+		log.Debugln("[Fragment] [%s] Non-TLS stream detected (byte 1: 0x%02x != 0x03), flushing %d bytes as raw stream", fc.targetDesc(""), toWrite[1], len(toWrite))
 		nSent, err := fc.writeAll(toWrite)
 		n := nSent - prevLen
 		if n < 0 {
@@ -158,6 +196,7 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 		}
 		if err != nil {
 			fc.lastErr = err
+			log.Errorln("[Fragment] [%s] ERROR: Failed to write raw stream: %v", fc.targetDesc(""), err)
 		}
 		return n, err
 	}
@@ -173,6 +212,7 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 			fc.fragmentDone = true
 			toWrite := fc.buf
 			fc.buf = nil
+			log.Debugln("[Fragment] [%s] Non-ClientHello stream detected (byte 5: 0x%02x, recLen: %d), flushing %d bytes as raw stream", fc.targetDesc(""), toWrite[5], recLen, len(toWrite))
 			nSent, err := fc.writeAll(toWrite)
 			n := nSent - prevLen
 			if n < 0 {
@@ -183,6 +223,7 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 			}
 			if err != nil {
 				fc.lastErr = err
+				log.Errorln("[Fragment] [%s] ERROR: Failed to write raw stream: %v", fc.targetDesc(""), err)
 			}
 			return n, err
 		}
@@ -214,8 +255,16 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 	extraBytes := fc.buf[totalExpected:]
 	fc.buf = nil
 
+	sni := ExtractSNI(helloRecord)
+	target := fc.targetDesc(sni)
+	mode := fc.opt.GetMode()
+
+	log.Infoln("[Fragment] [%s] TLS ClientHello detected (size: %d bytes, mode: %s)", target, len(helloRecord), mode)
+
 	// Fragment and send the ClientHello
-	nFrag, err := fc.sendFragmented(helloRecord)
+	startTime := time.Now()
+	nFrag, err := fc.sendFragmented(helloRecord, target, sni)
+	elapsed := time.Since(startTime)
 	if err != nil {
 		n := nFrag - prevLen
 		if n < 0 {
@@ -230,6 +279,7 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 
 	// If there were any extra bytes buffered beyond the ClientHello record, send them directly
 	if len(extraBytes) > 0 {
+		log.Debugln("[Fragment] [%s] Sending %d extra buffered bytes directly", target, len(extraBytes))
 		nExtra, err := fc.writeAll(extraBytes)
 		if err != nil {
 			n := (nFrag + nExtra) - prevLen
@@ -244,6 +294,7 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 		}
 	}
 
+	_ = elapsed
 	return len(p), nil
 }
 
@@ -271,7 +322,7 @@ func (fc *fragConn) Close() error {
 	return closeErr
 }
 
-func (fc *fragConn) sendFragmented(record []byte) (int, error) {
+func (fc *fragConn) sendFragmented(record []byte, target string, sni string) (int, error) {
 	// Fallback check: if record is corrupted or too short, write as-is
 	if len(record) < 5 || record[0] != 0x16 || record[1] != 0x03 {
 		return fc.writeAll(record)
@@ -279,6 +330,7 @@ func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 
 	mode := fc.opt.GetMode()
 	isRecordFrag := fc.opt.IsRecordFragment()
+	startTime := time.Now()
 
 	// Step 1: If Record-Fragment is enabled, convert the single TLS record
 	// into multiple valid TLS records.
@@ -296,6 +348,7 @@ func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 	case ModeRecordFragment:
 		// Pure TLS record fragmentation: each TLS record is written as a separate TCP packet
 		chunks = recordsToSend
+		log.Debugln("[Fragment] [%s] Mode: RECORD_FRAGMENT, TLS records created: %d (record lengths: %v)", target, len(recordsToSend), chunkLengths(recordsToSend))
 
 	case ModeBoth:
 		// BOTH TLS record fragmentation AND TCP segmentation:
@@ -303,6 +356,7 @@ func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 		for _, rec := range recordsToSend {
 			chunks = append(chunks, splitRandom(rec, &fc.opt)...)
 		}
+		log.Debugln("[Fragment] [%s] Mode: BOTH, TLS records: %d, TCP chunks: %d (chunk lengths: %v)", target, len(recordsToSend), len(chunks), chunkLengths(chunks))
 
 	case ModeRandom:
 		// Conflict resolution: if record-fragment is also true, split into records, then each into chunks
@@ -310,8 +364,10 @@ func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 			for _, rec := range recordsToSend {
 				chunks = append(chunks, splitRandom(rec, &fc.opt)...)
 			}
+			log.Debugln("[Fragment] [%s] Mode: RANDOM+RECORD_FRAGMENT, TLS records: %d, TCP chunks: %d (lengths: %v)", target, len(recordsToSend), len(chunks), chunkLengths(chunks))
 		} else {
 			chunks = splitRandom(record, &fc.opt)
+			log.Debugln("[Fragment] [%s] Mode: RANDOM, TCP chunks: %d (lengths: %v)", target, len(chunks), chunkLengths(chunks))
 		}
 
 	case ModeSNI:
@@ -320,16 +376,20 @@ func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 		// Conflict resolution: if record-fragment is also true, send records as chunks
 		if isRecordFrag {
 			chunks = recordsToSend
+			log.Debugln("[Fragment] [%s] Mode: SNI+RECORD_FRAGMENT, TLS records created: %d (record lengths: %v)", target, len(recordsToSend), chunkLengths(recordsToSend))
 		} else {
+			cut := -1
 			sniOffset, sniLen, ok := FindSNIOffset(record)
 			if ok && sniLen > 0 {
-				cut := sniOffset + sniLen/2
+				cut = sniOffset + sniLen/2
 				if cut > 5 && cut < len(record) {
 					chunks = [][]byte{record[:cut], record[cut:]}
+					log.Debugln("[Fragment] [%s] Mode: SNI (server_name: %s), split at boundary offset %d (chunk lengths: %v)", target, sni, cut, chunkLengths(chunks))
 				}
 			}
 			if len(chunks) == 0 {
 				chunks = splitRandom(record, &fc.opt)
+				log.Debugln("[Fragment] [%s] Mode: SNI fallback to random (SNI not found), TCP chunks: %d (lengths: %v)", target, len(chunks), chunkLengths(chunks))
 			}
 		}
 	}
@@ -338,18 +398,24 @@ func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 	minI, maxI := fc.opt.IntervalRange(1, 5)
 	totalSent := 0
 	for cIdx, chunk := range chunks {
+		var pause time.Duration
 		if cIdx > 0 {
-			pause := fc.opt.RandomInterval(minI, maxI)
+			pause = fc.opt.RandomInterval(minI, maxI)
 			if pause > 0 {
 				time.Sleep(pause)
 			}
 		}
+		log.Debugln("[Fragment] [%s] TCP write %d/%d (%d bytes, pause: %v)", target, cIdx+1, len(chunks), len(chunk), pause)
 		n, err := fc.writeAll(chunk)
 		totalSent += n
 		if err != nil {
+			log.Errorln("[Fragment] [%s] ERROR: Failed to write fragment %d/%d (%d bytes): %v", target, cIdx+1, len(chunks), len(chunk), err)
 			return totalSent, err
 		}
 	}
+
+	elapsed := time.Since(startTime)
+	log.Infoln("[Fragment] [%s] Fragmentation completed successfully (mode: %s, TCP writes: %d, elapsed: %v)", target, mode, len(chunks), elapsed)
 
 	return totalSent, nil
 }
