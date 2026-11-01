@@ -17,3 +17,39 @@ target
 .vfox
 .claude
 .zed
+
+# Dumps and logs
+*.pcap
+*.pcapng
+*.log
+logs/
+
+# Test scripts and scratch
+*.py
+scratch/
+test_*/
+
+# Configs and user data
+config.yaml
+verge.yaml
+profiles/
+profiles.yaml
+*.config/
+data/
+
+# Secrets and tokens
+.env
+*.env
+*.key
+*.pem
+*.crt
+id_rsa*
+id_ed25519*
+
+# Binaries and packages
+*.exe
+*.dll
+*.msi
+*.zip
+clash-verge-portable/
+verge-mihomo*
