@@ -473,7 +473,12 @@ pub fn apply_fragment_to_config(config: &mut Mapping, verge: &IVerge) {
     let apply_all = verge.fragment_apply_all != Some(false);
 
     let raw_mode = verge.fragment_mode.as_deref().unwrap_or("sni");
-    let global_mode = if raw_mode.eq_ignore_ascii_case("random") { "random" } else { "sni" };
+    let global_mode = match raw_mode.to_ascii_lowercase().as_str() {
+        "random" => "random",
+        "record_fragment" | "record-fragment" => "record_fragment",
+        "both" => "both",
+        _ => "sni",
+    };
 
     let raw_length = verge.fragment_length.as_deref().unwrap_or("10-30");
     let global_length = if validate_range(raw_length, false) { raw_length } else { "10-30" };
@@ -513,19 +518,37 @@ pub fn apply_fragment_to_config(config: &mut Mapping, verge: &IVerge) {
                         .and_then(|v| v.as_str())
                         .unwrap_or("sni")
                         .to_lowercase();
-                    if mode == "random" {
-                        frag_map.insert(Value::String("mode".into()), Value::String("random".into()));
-                        let len_valid = frag_map
-                            .get("length")
-                            .and_then(|v| v.as_str())
-                            .map(|s| validate_range(s, false))
-                            .unwrap_or(false);
-                        if !len_valid {
-                            frag_map.insert(Value::String("length".into()), Value::String(global_length.into()));
+                    match mode.as_str() {
+                        "random" => {
+                            frag_map.insert(Value::String("mode".into()), Value::String("random".into()));
+                            let len_valid = frag_map
+                                .get("length")
+                                .and_then(|v| v.as_str())
+                                .map(|s| validate_range(s, false))
+                                .unwrap_or(false);
+                            if !len_valid {
+                                frag_map.insert(Value::String("length".into()), Value::String(global_length.into()));
+                            }
                         }
-                    } else {
-                        frag_map.insert(Value::String("mode".into()), Value::String("sni".into()));
-                        frag_map.remove("length");
+                        "record_fragment" | "record-fragment" => {
+                            frag_map.insert(Value::String("mode".into()), Value::String("record_fragment".into()));
+                            frag_map.remove("length");
+                        }
+                        "both" => {
+                            frag_map.insert(Value::String("mode".into()), Value::String("both".into()));
+                            let len_valid = frag_map
+                                .get("length")
+                                .and_then(|v| v.as_str())
+                                .map(|s| validate_range(s, false))
+                                .unwrap_or(false);
+                            if !len_valid {
+                                frag_map.insert(Value::String("length".into()), Value::String(global_length.into()));
+                            }
+                        }
+                        _ => {
+                            frag_map.insert(Value::String("mode".into()), Value::String("sni".into()));
+                            frag_map.remove("length");
+                        }
                     }
 
                     let int_valid = frag_map
@@ -548,7 +571,7 @@ pub fn apply_fragment_to_config(config: &mut Mapping, verge: &IVerge) {
             let mut frag_map = Mapping::new();
             frag_map.insert(Value::String("enabled".into()), Value::Bool(true));
             frag_map.insert(Value::String("mode".into()), Value::String(global_mode.into()));
-            if global_mode == "random" {
+            if global_mode == "random" || global_mode == "both" {
                 frag_map.insert(Value::String("length".into()), Value::String(global_length.into()));
             }
             frag_map.insert(Value::String("interval".into()), Value::String(global_interval.into()));

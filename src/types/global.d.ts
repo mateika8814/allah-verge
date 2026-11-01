@@ -343,7 +343,7 @@ type SudokuHttpMaskStrategy = 'random' | 'post' | 'websocket'
 // base
 interface IFragmentConfig {
   enabled?: boolean
-  mode?: 'sni' | 'random'
+  mode?: 'sni' | 'random' | 'record_fragment' | 'both'
   length?: string
   interval?: string
   'record-fragment'?: boolean

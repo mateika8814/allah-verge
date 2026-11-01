@@ -41,9 +41,9 @@ const ProxyFragmentDialogInner: React.FC<InnerProps> = ({
 
   const frag = proxy.fragment
   const [enabled, setEnabled] = useState(frag?.enabled ?? false)
-  const [mode, setMode] = useState<'sni' | 'random'>(
-    (frag?.mode as 'sni' | 'random') ?? 'sni',
-  )
+  const [mode, setMode] = useState<
+    'sni' | 'random' | 'record_fragment' | 'both'
+  >((frag?.mode as any) ?? 'sni')
   const [length, setLength] = useState(frag?.length ?? '10-30')
   const [intervalVal, setIntervalVal] = useState(frag?.interval ?? '1-5')
   const [recordFragment, setRecordFragment] = useState(
@@ -62,7 +62,7 @@ const ProxyFragmentDialogInner: React.FC<InnerProps> = ({
     }
 
     if (enabled) {
-      if (mode === 'random' && !validateLengthRange(length)) {
+      if ((mode === 'random' || mode === 'both') && !validateLengthRange(length)) {
         setLengthError(true)
         return
       }
@@ -80,7 +80,7 @@ const ProxyFragmentDialogInner: React.FC<InnerProps> = ({
       updatedProxy.fragment = {
         enabled: true,
         mode,
-        ...(mode === 'random' ? { length: length.trim() } : {}),
+        ...(mode === 'random' || mode === 'both' ? { length: length.trim() } : {}),
         interval: intervalVal.trim(),
         'record-fragment': recordFragment,
       }
@@ -150,7 +150,7 @@ const ProxyFragmentDialogInner: React.FC<InnerProps> = ({
                   <Select
                     size="small"
                     value={mode}
-                    onChange={(e) => setMode(e.target.value as 'sni' | 'random')}
+                    onChange={(e) => setMode(e.target.value as any)}
                     sx={{ width: 160 }}
                   >
                     <MenuItem value="sni">
@@ -159,11 +159,13 @@ const ProxyFragmentDialogInner: React.FC<InnerProps> = ({
                     <MenuItem value="random">
                       {t('profiles.modals.proxiesEditor.fragmentDialog.modeRandom')}
                     </MenuItem>
+                    <MenuItem value="record_fragment">Record Fragment</MenuItem>
+                    <MenuItem value="both">Both (Record + TCP)</MenuItem>
                   </Select>
                 </Box>
 
-                {/* Length (only when mode === 'random') */}
-                {mode === 'random' && (
+                {/* Length (when mode === 'random' or mode === 'both') */}
+                {(mode === 'random' || mode === 'both') && (
                   <Box
                     sx={{
                       display: 'flex',

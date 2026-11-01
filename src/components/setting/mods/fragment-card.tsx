@@ -249,11 +249,17 @@ export const FragmentCard: React.FC<Props> = ({ onError }) => {
               <MenuItem value="random">
                 {t('settings.sections.clash.form.fields.fragment.modeRandom')}
               </MenuItem>
+              <MenuItem value="record_fragment">
+                TLS Record Fragment
+              </MenuItem>
+              <MenuItem value="both">
+                Both (Record + TCP)
+              </MenuItem>
             </Select>
           </Box>
 
-          {/* Row 2: Length (Visible ONLY when mode === 'random') */}
-          {mode === 'random' && (
+          {/* Row 2: Length (Visible when mode === 'random' or mode === 'both') */}
+          {(mode === 'random' || mode === 'both') && (
             <Box
               sx={{
                 display: 'flex',
