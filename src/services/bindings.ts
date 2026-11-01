@@ -385,6 +385,14 @@ export type IVerge_Deserialize = {
   enable_bypass_check?: boolean | null
   /**  Initial DNS override preference for profiles without a saved setting. */
   enable_dns_settings?: boolean | null
+  /** Bypass DPI via TLS hello packet fragmentation */
+  enable_fragment?: boolean | null
+  fragment_mode?: string | null
+  fragment_packets?: string | null
+  fragment_length?: string | null
+  fragment_interval?: string | null
+  fragment_record_fragment?: boolean | null
+  fragment_apply_all?: boolean | null
   profile_dns_settings?: { [key in string]: ProfileDnsSettings_Deserialize }
   use_default_bypass?: boolean | null
   system_proxy_bypass?: string | null
@@ -475,6 +483,14 @@ export type IVerge_Serialize = {
   enable_bypass_check: boolean | null
   /**  Initial DNS override preference for profiles without a saved setting. */
   enable_dns_settings: boolean | null
+  /** Bypass DPI via TLS hello packet fragmentation */
+  enable_fragment: boolean | null
+  fragment_mode: string | null
+  fragment_packets: string | null
+  fragment_length: string | null
+  fragment_interval: string | null
+  fragment_record_fragment: boolean | null
+  fragment_apply_all: boolean | null
   profile_dns_settings?: { [key in string]: ProfileDnsSettings_Serialize }
   use_default_bypass: boolean | null
   system_proxy_bypass: string | null

@@ -413,6 +413,25 @@ export interface TranslationResources {
             append: string
             prepend: string
           }
+          fragmentDialog: {
+            cancel: string
+            enabled: string
+            errors: {
+              invalidInterval: string
+              invalidLength: string
+            }
+            interval: string
+            length: string
+            mode: string
+            modeRandom: string
+            modeSni: string
+            notTls: string
+            recordFragment: string
+            recordFragmentDesc: string
+            save: string
+            subtitle: string
+            title: string
+          }
           placeholders: {
             multiUri: string
           }
@@ -1264,6 +1283,26 @@ export interface TranslationResources {
               clashCore: string
               dnsOverwrite: string
               external: string
+              fragment: {
+                applyAll: string
+                applyAllDesc: string
+                errors: {
+                  invalidInterval: string
+                  invalidLength: string
+                  stockCoreWarning: string
+                }
+                interval: string
+                length: string
+                mode: string
+                modeRandom: string
+                modeSni: string
+                noticeDisabled: string
+                noticeEnabled: string
+                recordFragment: string
+                recordFragmentDesc: string
+                subtitle: string
+                title: string
+              }
               ipv6: string
               logLevel: string
               openUwpTool: string
@@ -1589,6 +1628,7 @@ export interface TranslationResources {
           noDisney: string
           originalsOnly: string
           pending: string
+          risky: string
           unsupportedRegion: string
           yes: string
         }

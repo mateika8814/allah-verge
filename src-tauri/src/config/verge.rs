@@ -92,6 +92,25 @@ pub struct IVerge {
     /// Initial DNS override preference for profiles without a saved setting.
     pub enable_dns_settings: Option<bool>,
 
+    /// Bypass DPI via TLS hello packet fragmentation
+    pub enable_fragment: Option<bool>,
+
+    #[specta(type = Option<std::string::String>)]
+    pub fragment_mode: Option<String>,
+
+    #[specta(type = Option<std::string::String>)]
+    pub fragment_packets: Option<String>,
+
+    #[specta(type = Option<std::string::String>)]
+    pub fragment_length: Option<String>,
+
+    #[specta(type = Option<std::string::String>)]
+    pub fragment_interval: Option<String>,
+
+    pub fragment_record_fragment: Option<bool>,
+
+    pub fragment_apply_all: Option<bool>,
+
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[specta(type = std::collections::BTreeMap<std::string::String, super::dns::ProfileDnsSettings>)]
     pub profile_dns_settings: std::collections::BTreeMap<String, super::dns::ProfileDnsSettings>,
@@ -382,6 +401,13 @@ impl IVerge {
             enable_hover_jump_navigator: Some(true),
             hover_jump_navigator_delay: Some(280),
             enable_system_proxy: Some(false),
+            enable_fragment: Some(false),
+            fragment_mode: Some("sni".into()),
+            fragment_packets: Some("tlshello".into()),
+            fragment_length: Some("10-30".into()),
+            fragment_interval: Some("1-5".into()),
+            fragment_record_fragment: Some(false),
+            fragment_apply_all: Some(true),
             proxy_auto_config: Some(false),
             pac_file_content: Some(DEFAULT_PAC.into()),
             proxy_host: Some("127.0.0.1".into()),
@@ -484,6 +510,12 @@ impl IVerge {
         patch!(verge_port);
         patch!(verge_http_enabled);
         patch!(enable_system_proxy);
+        patch!(enable_fragment);
+        patch!(fragment_mode);
+        patch!(fragment_length);
+        patch!(fragment_interval);
+        patch!(fragment_record_fragment);
+        patch!(fragment_apply_all);
         patch!(enable_proxy_guard);
         patch!(enable_bypass_check);
         patch!(use_default_bypass);

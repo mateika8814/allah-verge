@@ -134,6 +134,26 @@
               "add": "Add",
               "addNew": "Add New Tunnel"
             }
+          },
+          "fragment": {
+            "title": "TLS Fragmentation",
+            "subtitle": "Bypass DPI via TLS ClientHello fragmentation",
+            "mode": "Mode",
+            "modeSni": "SNI (Split by domain)",
+            "modeRandom": "Random (Split by byte chunks)",
+            "length": "Length (bytes, min-max)",
+            "interval": "Interval (ms, min-max)",
+            "recordFragment": "Record Fragment",
+            "recordFragmentDesc": "Split TLS record into multiple TLS records",
+            "applyAll": "Apply to all TLS nodes",
+            "applyAllDesc": "Use default settings for all TLS nodes unless overridden per-node",
+            "noticeEnabled": "TLS Fragmentation enabled",
+            "noticeDisabled": "TLS Fragmentation disabled",
+            "errors": {
+              "invalidLength": "Invalid length range: format N-M (N ≤ M, min ≥ 1)",
+              "invalidInterval": "Invalid interval range: format N-M (N ≤ M, min ≥ 0)",
+              "stockCoreWarning": "Warning: Connected core does not support TLS fragmentation. Please use our custom mihomo core."
+            }
           }
         },
         "tooltips": {

@@ -1,4 +1,4 @@
-import { ContentCopyRounded } from '@mui/icons-material'
+import { ContentCopyRounded, OpenInNewRounded } from '@mui/icons-material'
 import { Typography } from '@mui/material'
 import { useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -16,6 +16,7 @@ import {
 import { mutate } from '@/services/mutate'
 import { showNotice } from '@/services/notice-service'
 import { checkUpdateSafe as checkUpdate } from '@/services/update'
+import { openExternalUrl } from '@/utils/open-external-url'
 import { version } from '@root/package.json'
 
 import { BackupViewer } from './mods/backup-viewer'
@@ -183,6 +184,30 @@ const SettingVergeAdvanced = ({ onError: _ }: Props) => {
         }
       >
         <Typography sx={{ py: '7px', pr: 1 }}>v{version}</Typography>
+      </SettingItem>
+
+      <SettingItem
+        label="Fork by mateika8814"
+        extra={
+          <TooltipIcon
+            icon={OpenInNewRounded}
+            onClick={() => openExternalUrl('https://github.com/mateika8814/allah-verge').catch(() => {})}
+            title="Fork GitHub Repository"
+          />
+        }
+      >
+        <Typography
+          sx={{
+            py: '7px',
+            pr: 1,
+            cursor: 'pointer',
+            color: 'primary.main',
+            textDecoration: 'underline',
+          }}
+          onClick={() => openExternalUrl('https://github.com/mateika8814/allah-verge').catch(() => {})}
+        >
+          allah-verge (GPLv3)
+        </Typography>
       </SettingItem>
     </SettingList>
   )

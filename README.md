@@ -1,25 +1,20 @@
 <h1 align="center">
   <img src="./src-tauri/icons/icon.png" alt="Clash" width="128" />
   <br>
-  Continuation of <a href="https://github.com/zzzgydi/clash-verge">Clash Verge</a>
-  <br>
+  allah-verge
 </h1>
 
+<p align="center">
+  <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3" /></a>
+  <a href="https://github.com/mateika8814/allah-verge/releases"><img src="https://img.shields.io/github/v/release/mateika8814/allah-verge?include_prereleases" alt="Release" /></a>
+</p>
+
 <h3 align="center">
-A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a>.
+  Forked by <a href="https://github.com/mateika8814">mateika8814</a><br>
+  Based on <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> (v2.5.9, commit <code>ef784e459d31fe9d1946568b6fe47ac3a7e692b7</code>) and <a href="https://github.com/MetaCubeX/mihomo">mihomo</a> (commit <code>88dcbf7f1614a67c3b36b848ee3592dfa92ada36</code>) under GPLv3.
 </h3>
 
-<p align="center">
-  Languages:
-  <a href="./docs/README_en.md">English</a> ·
-  <a href="./docs/README_es.md">Español</a> ·
-  <a href="./docs/README_fa.md">فارسی</a> ·
-  <a href="./docs/README_ja.md">日本語</a> ·
-  <a href="./docs/README_ko.md">한국어</a> ·
-  <a href="./docs/README_pt.md">Português</a> ·
-  <a href="./docs/README_ru.md">Русский</a> ·
-  <a href="./README.md">简体中文</a>
-</p>
+---
 
 ## Preview
 
@@ -27,115 +22,150 @@ A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a
 | -------------------------------- | --------------------------------- |
 | ![预览](./docs/preview_dark.png) | ![预览](./docs/preview_light.png) |
 
-## Install
+---
 
-请到发布页面下载对应的安装包：[Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>
-Go to the [Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases) to download the corresponding installation package<br>
-Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
-支持 Windows (x64/x86)、Linux (x64/arm64) 和 macOS 11+ (intel/apple)。
+## TLS ClientHello Fragmentation (DPI / ТСПУ Bypass)
 
-#### 我应当怎样选择发行版
+Этот форк добавляет полноценную поддержку нарезки пакетов и TLS-записей ClientHello для обхода систем глубокого анализа пакетов (DPI / ТСПУ).
 
-| 版本        | 特征                                     | 链接                                                                                   |
-| :---------- | :--------------------------------------- | :------------------------------------------------------------------------------------- |
-| Stable      | 正式版，高可靠性，适合日常使用。         | [Release](https://github.com/clash-verge-rev/clash-verge-rev/releases)                 |
-| Alpha(废弃) | 测试发布流程。                           | [Alpha](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/alpha)         |
-| AutoBuild   | 滚动更新版，适合测试反馈，可能存在缺陷。 | [AutoBuild](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/autobuild) |
+### Что добавлено
+1. **Ядро (`core/`)**:
+   - Движок `component/fragment`, оборачивающий исходящие TCP-соединения TLS-нод.
+   - 4 режима нарезки: `sni`, `random`, `record_fragment`, `both`.
+   - Защита от ложного срабатывания: при первых байтах не-TLS потока или несовпадении заголовка ClientHello (проверка первых 6 байт) данные передаются прозрачно без задержки.
+   - Защита от зависания: настраиваемый таймаут буферизации (2 секунды) с автоматическим сбросом накопленных данных без утечек и гонок.
+   - Корректная обработка интервалов: независимый расчёт задержки для каждой пары отправляемых сегментов в заданном диапазоне `interval`.
+   - Кроссплатформенная поддержка: сборка и работа проверены на Linux, macOS (Darwin) и Windows.
+2. **Интерфейс (GUI)**:
+   - Модальное окно «TLS Fragmentation» в списке прокси для индивидуальной настройки на уровне узла.
+   - Глобальная карточка «TLS Fragmentation» в `Settings -> Clash Setting` с опцией применения ко всем TLS-нодам.
+   - Автоматическая инъекция параметров в runtime-конфигурацию ядра.
 
-#### 安装说明和常见问题，请到 [文档页](https://clash-verge-rev.github.io/) 查看
+### Пример YAML ноды
+```yaml
+proxies:
+  - name: "My-TLS-Node"
+    type: vless
+    server: 198.51.100.1
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000000
+    tls: true
+    server-name: example.com
+    fragment:
+      enabled: true
+      mode: sni              # Режим: sni (по умолчанию) | random | record_fragment | both
+      length: 10-30          # Размер фрагментов в байтах (для random и both)
+      interval: 1-5          # Пауза между отправками в мс (число или диапазон N-M)
+      record-fragment: false # Флаг нарезки записей TLS (для обратной совместимости)
+```
 
-### TG 频道: [@clash_verge_rev](https://t.me/clash_verge_re)
+### Таблица режимов и поведение
+
+| Режим (`mode`) | Поведение на проводе | Нарезка TCP | Нарезка записей TLS | `length` |
+| :--- | :--- | :---: | :---: | :---: |
+| **`sni`** *(по умолчанию)* | Разрезает TCP-сегмент ClientHello точно по границе расширения SNI (имя домена обрывается посередине) | Да | Нет | Не требуется / опускается |
+| **`random`** | Разрезает ClientHello на случайные сегменты в пределах диапазона `length` | Да | Нет | Обязателен (например, `10-30`) |
+| **`record_fragment`** *(экспер.)* | Разделяет ClientHello на несколько валидных TLS-записей (Content Type 0x16) | Зависит от MTU | Да | Размер блоков записи |
+| **`both`** *(экспер.)* | Выполняет нарезку на уровне TLS-записей **И** нарезает их на отдельные TCP-пакеты с задержкой | Да | Да | Размер блоков (например, `10-30`) |
+
+#### Поведение при конфликтах комбинаций
+- Если указан флаг `record-fragment: true` совместно с `mode: sni` или `mode: random`, флаг `record-fragment` имеет приоритет и активирует разделение на уровне TLS-записей.
+- Если режим не указан или передан пустой строкой, по умолчанию используется наиболее стабильный режим **`sni`**.
+- Если передано неизвестное значение `mode`, ядро пишет предупреждение в лог (`[Fragment] unknown fragmentation mode '...', falling back to 'sni'`) и безопасно переключается на режим `sni`.
+- **Экспериментальный статус**: режимы `record_fragment` и `both` создают множественные TLS-записи и на реальных серверах VLESS Reality могут приводить к сбросу рукопожатия, если сервер требует строгую единую запись в первом пакете. При возникновении проблем используйте стандартный режим `sni`.
 
 ---
 
-## Promotion
+## Install / Установка
 
-### ✈️ [AI云边 -- 全新架构机场 ClaudeBorder](https://cruise.54678999.xyz/#/register?code=58q5UJZc)
+Готовые бинарные сборки форка доступны на странице релизов нашего проекта:  
+👉 **[Релизы allah-verge](https://github.com/mateika8814/allah-verge/releases)**
 
-🔥热销中使用本链接注册即送 **3 天免费试用**，每日 **1GB 流量**：👉 [点此注册](https://cruise.54678999.xyz/#/register?code=58q5UJZc)
+> [!WARNING]
+> **Несовместимость со стоковыми версиями**: Стоковый Clash Verge Rev и оригинальное ядро Mihomo не поддерживают блок конфигурации `fragment:`. Для работы фрагментации необходимо использовать сборку из релизов этого форка или собрать ядро из папки `core/`.
 
-#### AI云边 -- 全新架构机场。
+---
 
-- 💻 多次**技术迭代后**全新亮相。
-- 🗺 全**高速稳定**正价节点。
-- 🌏 **海外团队**，不跑路
-- 🚀 线路**冗余**设计，**自动化运维**对抗各类封锁
-- 👨‍🦲 团队架构师为**大厂**网络架构师
-- 💰 极致**稳定**，亲民价**价格**
-- 🌐 全面支持**流媒体及各AI访问**
-- 🙋 7*12小时真人客服。解决您的各类问题。
+## Сборка из исходников / Building
 
-🌐 官网：👉 [https://www.claudeborder.com](https://cruise.54678999.xyz/#/register?code=58q5UJZc)
+### 1. Сборка ядра (`core/`)
+Требуется Go 1.22+. Сборка кроссплатформенная (Windows, Linux, macOS):
+```bash
+cd core
+go build -v -trimpath -ldflags "-s -w -buildid=" -tags with_gvisor -o verge-mihomo.exe .
+```
 
-### 🤖 [GPTKefu —— 与 Crisp 深度整合的 AI 智能客服平台](https://gptkefu.com)
+### 2. Сборка GUI
+Требуются Node.js 18+, pnpm и Rust toolchain:
+```bash
+pnpm install
+pnpm dev
+pnpm tauri build
+```
 
-- 🧠 深度理解完整对话上下文 + 图片识别，自动给出专业、精准的回复，告别机械式客服。
-- ♾️ **不限回答数量**，无额度焦虑，区别于其他按条计费的 AI 客服产品。
-- 💬 售前咨询、售后服务、复杂问题解答，全场景轻松覆盖，真实用户案例已验证效果。
-- ⚡ 3 分钟极速接入，零门槛上手，即刻提升客服效率与客户满意度。
-- 🎁 高级套餐免费试用 14 天，先体验后付费：👉 [立即试用](https://gptkefu.com)
-- 📢 智能客服TG 频道：[@crisp_ai](https://t.me/crisp_ai)
+### 3. Подстановка ядра (Sidecar)
+- Для portable-версии: поместите собранный `verge-mihomo.exe` в корень папки приложения рядом с `clash-verge.exe`.
+- Для сборки инсталлятора: поместите бинарник в `src-tauri/sidecar/verge-mihomo-x86_64-pc-windows-msvc.exe`.
+
+---
+
+## Синхронизация с апстримом / Updating from Upstream
+
+```bash
+# Добавление апстрима
+git remote add upstream https://github.com/clash-verge-rev/clash-verge-rev.git
+
+# Получение обновлений GUI
+git fetch upstream
+git checkout dev
+git pull upstream dev
+git checkout feature/tls-fragment
+git rebase dev
+```
+
+Все изменения ядра зафиксированы в виде чистого патча [`core/fragment.patch`](./core/fragment.patch):
+```bash
+cd core
+git apply fragment.patch
+```
+
+---
+
+## Честные ограничения / Limitations & Warranty
+
+- **Зависимость от оператора**: Эффективность фрагментации против систем ТСПУ/DPI зависит от используемого провайдером оборудования и актуальных сигнатур фильтрации. Никаких гарантий «100% обхода всех блокировок» не предоставляется.
+- **Физический уровень**: Нарезка пакетов на физическом сетевом интерфейсе (Ethernet) подтверждена дампами Npcap/Wireshark.
+- **Отказ от гарантий (GPLv3)**: Программа предоставляется «КАК ЕСТЬ», без каких-либо явных или подразумеваемых гарантий, в том числе гарантий товарной пригодности или применимости для конкретных целей.
 
 ---
 
 ## Features
 
-- 基于性能强劲的 Rust 和 Tauri 2 框架
-- 内置[Clash.Meta(mihomo)](https://github.com/MetaCubeX/mihomo)内核，并支持切换 `Alpha` 版本内核。
-- 简洁美观的用户界面，支持自定义主题颜色、代理组/托盘图标以及 `CSS Injection`。
-- 配置文件管理和增强（Merge 和 Script），配置文件语法提示。
-- 系统代理和守卫、`TUN(虚拟网卡)` 模式。
-- 可视化节点和规则编辑
-- WebDav 配置备份和同步
+- Основан на Rust и Tauri 2.
+- Встроенное ядро [mihomo](https://github.com/MetaCubeX/mihomo) с поддержкой фрагментации TLS ClientHello.
+- Удобный интерфейс с переключением светлой/тёмной темы и кастомными стилями.
+- Управление профилями (Merge, Script), подсветка синтаксиса.
+- Системный прокси, TUN-режим (виртуальная сетевая карта).
+- Редактирование правил и прокси.
 
 ### FAQ
 
-Refer to [Doc FAQ Page](https://clash-verge-rev.github.io/faq/windows.html)
+Подробная документация доступна на [странице документации апстрима](https://clash-verge-rev.github.io/faq/windows.html).
 
-### Donation
-
-[捐助Clash Verge Rev的开发](https://github.com/sponsors/clash-verge-rev)
-
-## Development
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for more details.
-
-To run the development server, execute the following commands after all prerequisites for **Tauri** are installed:
-
-```shell
-pnpm i
-pnpm run prebuild
-pnpm dev
-```
-
-`pnpm dev` preserves the Development Channel's installed service state: an
-existing service is used, while a previously uninstalled service remains
-uninstalled and the app starts in Sidecar mode. Use `pnpm dev:service` to
-explicitly install or update the isolated development service before launch,
-or `pnpm dev:sidecar` to force the unprivileged Sidecar workflow.
-
-## Contributions
-
-Issue and PR welcome!
+---
 
 ## Acknowledgement
 
-Clash Verge rev was based on or inspired by these projects and so on:
-
-- [zzzgydi/clash-verge](https://github.com/zzzgydi/clash-verge): A Clash GUI based on tauri. Supports Windows, macOS and Linux.
-- [tauri-apps/tauri](https://github.com/tauri-apps/tauri): Build smaller, faster, and more secure desktop applications with a web frontend.
-- [Dreamacro/clash](https://github.com/Dreamacro/clash): A rule-based tunnel in Go.
-- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo): A rule-based tunnel in Go.
-- [Fndroid/clash_for_windows_pkg](https://github.com/Fndroid/clash_for_windows_pkg): A Windows/macOS GUI based on Clash.
-- [vitejs/vite](https://github.com/vitejs/vite): Next generation frontend tooling. It's fast!
+Clash Verge Rev и allah-verge основаны на разработках следующих проектов:
+- [clash-verge-rev/clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev): Основной апстрим GUI.
+- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo): Ядро прокси и сетевого туннелирования.
+- [zzzgydi/clash-verge](https://github.com/zzzgydi/clash-verge): Исходный проект Clash Verge на Tauri.
+- [tauri-apps/tauri](https://github.com/tauri-apps/tauri): Фреймворк для настольных приложений.
 
 ## Privacy
 
-Clash Verge Rev 不收集任何用户数据，配置与日志仅保存在本地。详见[隐私政策](./PRIVACY.md)。
-
-Clash Verge Rev does not collect any user data; configuration and logs stay on
-your own device. See the [Privacy Policy](./PRIVACY.md) for details.
+allah-verge не собирает пользовательские данные. Конфигурации и журналы сохраняются исключительно локально на вашем устройстве.
 
 ## License
 
-GPL-3.0 License. See [License here](./LICENSE) for details.
+GNU General Public License v3.0. Подробности см. в файле [LICENSE](./LICENSE) и [NOTICE.md](./NOTICE.md).
