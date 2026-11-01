@@ -50,7 +50,11 @@ const LogPage = () => {
       const matchesSearch = match(searchText)
 
       return (
-        (logState == 'all' ? true : data.type.includes(logState)) &&
+        (logState === 'all'
+          ? true
+          : logState === 'fragment'
+            ? data.payload.includes('[Fragment]')
+            : data.type.includes(logState)) &&
         matchesSearch
       )
     })
@@ -172,6 +176,7 @@ const LogPage = () => {
           <MenuItem value="info">{t('shared.filters.logLevels.info')}</MenuItem>
           <MenuItem value="warn">{t('shared.filters.logLevels.warn')}</MenuItem>
           <MenuItem value="err">{t('shared.filters.logLevels.error')}</MenuItem>
+          <MenuItem value="fragment">Fragment</MenuItem>
         </BaseStyledSelect>
         <BaseSearchBox
           onSearch={(matcher, state) => {

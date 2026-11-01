@@ -24,6 +24,8 @@ import { useVerge } from '@/hooks/use-verge'
 import { showNotice } from '@/services/notice-service'
 import { validateIntervalRange, validateLengthRange } from '@/utils/fragment'
 
+import { FragmentDiagnosticsCard } from './fragment-diagnostics-card'
+
 interface Props {
   onError?: (err: Error) => void
 }
@@ -393,6 +395,8 @@ export const FragmentCard: React.FC<Props> = ({ onError }) => {
               onChange={(_, checked) => void handleApplyAllToggle(checked)}
             />
           </Box>
+
+          <FragmentDiagnosticsCard />
         </Box>
       </Collapse>
     </Box>

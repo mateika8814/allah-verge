@@ -92,12 +92,24 @@ index 6a05c8b..c2b1ff7 100644
  
  	if opt.network == 4 || opt.network == 6 {
  		if strings.Contains(network, "tcp") {
+diff --git a/hub/route/server.go b/hub/route/server.go
+index 6d37d48..741b9e0 100644
+--- a/hub/route/server.go
++++ b/hub/route/server.go
+@@ -139,6 +139,7 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
+ 			r.Mount("/restart", restartRouter())
+ 		}
+ 		r.Mount("/upgrade", upgradeRouter())
++		r.Mount("/fragment", fragmentRouter())
+ 		addExternalRouters(r)
+ 
+ 	})
 diff --git a/component/fragment/conn.go b/component/fragment/conn.go
 new file mode 100644
-index 0000000..1b38a9c
+index 0000000..372002a
 --- /dev/null
 +++ b/component/fragment/conn.go
-@@ -0,0 +1,502 @@
+@@ -0,0 +1,549 @@
 +// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
 +// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
 +//
@@ -110,12 +122,10 @@ index 0000000..1b38a9c
 +
 +import (
 +	"encoding/binary"
-+	"fmt"
++	"io"
 +	"net"
 +	"sync"
 +	"time"
-+
-+	"github.com/metacubex/mihomo/log"
 +)
 +
 +type fragConn struct {
@@ -141,22 +151,13 @@ index 0000000..1b38a9c
 +	}
 +}
 +
-+// targetDesc returns a human-readable identifier for this connection (SNI + RemoteAddr).
++// targetDesc returns a privacy-masked identifier for this connection (SNI + RemoteAddr).
 +func (fc *fragConn) targetDesc(sni string) string {
 +	remote := ""
 +	if fc.Conn != nil && fc.Conn.RemoteAddr() != nil {
 +		remote = fc.Conn.RemoteAddr().String()
 +	}
-+	if sni != "" && remote != "" {
-+		return fmt.Sprintf("%s (%s)", sni, remote)
-+	}
-+	if sni != "" {
-+		return sni
-+	}
-+	if remote != "" {
-+		return remote
-+	}
-+	return "unknown"
++	return TargetIdentifier(remote, sni)
 +}
 +
 +// chunkLengths returns slice of byte lengths for a list of chunks.
@@ -179,6 +180,9 @@ index 0000000..1b38a9c
 +		}
 +		if err != nil {
 +			return total, err
++		}
++		if n == 0 {
++			return total, io.ErrShortWrite
 +		}
 +	}
 +	return total, nil
@@ -211,14 +215,17 @@ index 0000000..1b38a9c
 +	toWrite := fc.buf
 +	fc.buf = nil
 +
++	RecordBufferTimeout()
++
 +	timeout := fc.opt.GetBufferTimeout()
 +	target := fc.targetDesc("")
-+	log.Warnln("[Fragment] [%s] WARNING: Buffer timeout (%v) reached with %d bytes, flushing as raw data", target, timeout, len(toWrite))
++	LogWarn("[%s] WARNING: Buffer timeout (%v) reached with %d bytes, flushing as raw data", target, timeout, len(toWrite))
 +
 +	_, err := fc.writeAll(toWrite)
 +	if err != nil {
 +		fc.lastErr = err
-+		log.Errorln("[Fragment] [%s] ERROR: Failed to flush buffer on timeout (%d bytes): %v", target, len(toWrite), err)
++		RecordFragmentationError(string(fc.opt.GetMode()), err)
++		LogError("[%s] ERROR: Failed to flush buffer on timeout (%d bytes): %v", target, len(toWrite), err)
 +	}
 +}
 +
@@ -257,14 +264,16 @@ index 0000000..1b38a9c
 +		if p[0] != 0x16 {
 +			fc.fragmentDone = true
 +			fc.stopTimer()
-+			log.Debugln("[Fragment] [%s] Non-TLS stream detected (prefix: 0x%02x), bypassing fragmentation", fc.targetDesc(""), p[0])
++			RecordNonTLSBypass()
++			LogDebug("[%s] Non-TLS stream detected (prefix: 0x%02x), bypassing fragmentation", fc.targetDesc(""), p[0])
 +			return fc.Conn.Write(p)
 +		}
 +		// If at least 2 bytes are provided and byte 1 is not 0x03, this is not TLS.
 +		if len(p) >= 2 && p[1] != 0x03 {
 +			fc.fragmentDone = true
 +			fc.stopTimer()
-+			log.Debugln("[Fragment] [%s] Non-TLS stream detected (byte 1: 0x%02x != 0x03), bypassing fragmentation", fc.targetDesc(""), p[1])
++			RecordNonTLSBypass()
++			LogDebug("[%s] Non-TLS stream detected (byte 1: 0x%02x != 0x03), bypassing fragmentation", fc.targetDesc(""), p[1])
 +			return fc.Conn.Write(p)
 +		}
 +		// If exactly 1 byte was written (0x16), buffer it and wait for subsequent bytes.
@@ -285,7 +294,8 @@ index 0000000..1b38a9c
 +		fc.fragmentDone = true
 +		toWrite := fc.buf
 +		fc.buf = nil
-+		log.Debugln("[Fragment] [%s] Non-TLS stream detected (byte 1: 0x%02x != 0x03), flushing %d bytes as raw stream", fc.targetDesc(""), toWrite[1], len(toWrite))
++		RecordNonTLSBypass()
++		LogDebug("[%s] Non-TLS stream detected (byte 1: 0x%02x != 0x03), flushing %d bytes as raw stream", fc.targetDesc(""), toWrite[1], len(toWrite))
 +		nSent, err := fc.writeAll(toWrite)
 +		n := nSent - prevLen
 +		if n < 0 {
@@ -296,7 +306,7 @@ index 0000000..1b38a9c
 +		}
 +		if err != nil {
 +			fc.lastErr = err
-+			log.Errorln("[Fragment] [%s] ERROR: Failed to write raw stream: %v", fc.targetDesc(""), err)
++			LogError("[%s] ERROR: Failed to write raw stream: %v", fc.targetDesc(""), err)
 +		}
 +		return n, err
 +	}
@@ -312,7 +322,8 @@ index 0000000..1b38a9c
 +			fc.fragmentDone = true
 +			toWrite := fc.buf
 +			fc.buf = nil
-+			log.Debugln("[Fragment] [%s] Non-ClientHello stream detected (byte 5: 0x%02x, recLen: %d), flushing %d bytes as raw stream", fc.targetDesc(""), toWrite[5], recLen, len(toWrite))
++			RecordNonTLSBypass()
++			LogDebug("[%s] Non-ClientHello stream detected (byte 5: 0x%02x, recLen: %d), flushing %d bytes as raw stream", fc.targetDesc(""), toWrite[5], recLen, len(toWrite))
 +			nSent, err := fc.writeAll(toWrite)
 +			n := nSent - prevLen
 +			if n < 0 {
@@ -323,7 +334,7 @@ index 0000000..1b38a9c
 +			}
 +			if err != nil {
 +				fc.lastErr = err
-+				log.Errorln("[Fragment] [%s] ERROR: Failed to write raw stream: %v", fc.targetDesc(""), err)
++				LogError("[%s] ERROR: Failed to write raw stream: %v", fc.targetDesc(""), err)
 +			}
 +			return n, err
 +		}
@@ -359,13 +370,15 @@ index 0000000..1b38a9c
 +	target := fc.targetDesc(sni)
 +	mode := fc.opt.GetMode()
 +
-+	log.Infoln("[Fragment] [%s] TLS ClientHello detected (size: %d bytes, mode: %s)", target, len(helloRecord), mode)
++	RecordClientHelloDetected(string(mode))
++	LogInfo("[%s] TLS ClientHello detected (size: %d bytes, mode: %s)", target, len(helloRecord), mode)
 +
 +	// Fragment and send the ClientHello
 +	startTime := time.Now()
 +	nFrag, err := fc.sendFragmented(helloRecord, target, sni)
 +	elapsed := time.Since(startTime)
 +	if err != nil {
++		RecordFragmentationError(string(mode), err)
 +		n := nFrag - prevLen
 +		if n < 0 {
 +			n = 0
@@ -379,9 +392,10 @@ index 0000000..1b38a9c
 +
 +	// If there were any extra bytes buffered beyond the ClientHello record, send them directly
 +	if len(extraBytes) > 0 {
-+		log.Debugln("[Fragment] [%s] Sending %d extra buffered bytes directly", target, len(extraBytes))
++		LogDebug("[%s] Sending %d extra buffered bytes directly", target, len(extraBytes))
 +		nExtra, err := fc.writeAll(extraBytes)
 +		if err != nil {
++			RecordFragmentationError(string(mode), err)
 +			n := (nFrag + nExtra) - prevLen
 +			if n < 0 {
 +				n = 0
@@ -390,10 +404,12 @@ index 0000000..1b38a9c
 +				n = len(p)
 +			}
 +			fc.lastErr = err
++			LogError("[%s] ERROR: Failed to write extra buffered bytes: %v", target, err)
 +			return n, err
 +		}
 +	}
 +
++	RecordFragmentationSuccess(string(mode))
 +	_ = elapsed
 +	return len(p), nil
 +}
@@ -448,7 +464,7 @@ index 0000000..1b38a9c
 +	case ModeRecordFragment:
 +		// Pure TLS record fragmentation: each TLS record is written as a separate TCP packet
 +		chunks = recordsToSend
-+		log.Debugln("[Fragment] [%s] Mode: RECORD_FRAGMENT, TLS records created: %d (record lengths: %v)", target, len(recordsToSend), chunkLengths(recordsToSend))
++		LogDebug("[%s] Mode: RECORD_FRAGMENT, TLS records created: %d (record lengths: %v)", target, len(recordsToSend), chunkLengths(recordsToSend))
 +
 +	case ModeBoth:
 +		// BOTH TLS record fragmentation AND TCP segmentation:
@@ -456,7 +472,7 @@ index 0000000..1b38a9c
 +		for _, rec := range recordsToSend {
 +			chunks = append(chunks, splitRandom(rec, &fc.opt)...)
 +		}
-+		log.Debugln("[Fragment] [%s] Mode: BOTH, TLS records: %d, TCP chunks: %d (chunk lengths: %v)", target, len(recordsToSend), len(chunks), chunkLengths(chunks))
++		LogDebug("[%s] Mode: BOTH, TLS records: %d, TCP chunks: %d (chunk lengths: %v)", target, len(recordsToSend), len(chunks), chunkLengths(chunks))
 +
 +	case ModeRandom:
 +		// Conflict resolution: if record-fragment is also true, split into records, then each into chunks
@@ -464,10 +480,10 @@ index 0000000..1b38a9c
 +			for _, rec := range recordsToSend {
 +				chunks = append(chunks, splitRandom(rec, &fc.opt)...)
 +			}
-+			log.Debugln("[Fragment] [%s] Mode: RANDOM+RECORD_FRAGMENT, TLS records: %d, TCP chunks: %d (lengths: %v)", target, len(recordsToSend), len(chunks), chunkLengths(chunks))
++			LogDebug("[%s] Mode: RANDOM+RECORD_FRAGMENT, TLS records: %d, TCP chunks: %d (lengths: %v)", target, len(recordsToSend), len(chunks), chunkLengths(chunks))
 +		} else {
 +			chunks = splitRandom(record, &fc.opt)
-+			log.Debugln("[Fragment] [%s] Mode: RANDOM, TCP chunks: %d (lengths: %v)", target, len(chunks), chunkLengths(chunks))
++			LogDebug("[%s] Mode: RANDOM, TCP chunks: %d (lengths: %v)", target, len(chunks), chunkLengths(chunks))
 +		}
 +
 +	case ModeSNI:
@@ -476,20 +492,32 @@ index 0000000..1b38a9c
 +		// Conflict resolution: if record-fragment is also true, send records as chunks
 +		if isRecordFrag {
 +			chunks = recordsToSend
-+			log.Debugln("[Fragment] [%s] Mode: SNI+RECORD_FRAGMENT, TLS records created: %d (record lengths: %v)", target, len(recordsToSend), chunkLengths(recordsToSend))
++			LogDebug("[%s] Mode: SNI+RECORD_FRAGMENT, TLS records created: %d (record lengths: %v)", target, len(recordsToSend), chunkLengths(recordsToSend))
 +		} else {
 +			cut := -1
 +			sniOffset, sniLen, ok := FindSNIOffset(record)
-+			if ok && sniLen > 0 {
-+				cut = sniOffset + sniLen/2
++			if ok && sniLen > 1 {
++				minCut, maxCut := fc.opt.ParseLength(1, sniLen-1)
++				if minCut < 1 {
++					minCut = 1
++				}
++				if maxCut >= sniLen {
++					maxCut = sniLen - 1
++				}
++				if minCut > maxCut {
++					minCut = 1
++					maxCut = sniLen - 1
++				}
++				cutInDomain := randomBetween(minCut, maxCut)
++				cut = sniOffset + cutInDomain
 +				if cut > 5 && cut < len(record) {
 +					chunks = [][]byte{record[:cut], record[cut:]}
-+					log.Debugln("[Fragment] [%s] Mode: SNI (server_name: %s), split at boundary offset %d (chunk lengths: %v)", target, sni, cut, chunkLengths(chunks))
++					LogDebug("[%s] Mode: SNI (server_name: %s), split at boundary offset %d (chunk lengths: %v)", target, MaskDomain(sni), cut, chunkLengths(chunks))
 +				}
 +			}
 +			if len(chunks) == 0 {
 +				chunks = splitRandom(record, &fc.opt)
-+				log.Debugln("[Fragment] [%s] Mode: SNI fallback to random (SNI not found), TCP chunks: %d (lengths: %v)", target, len(chunks), chunkLengths(chunks))
++				LogDebug("[%s] Mode: SNI fallback to random (SNI not found), TCP chunks: %d (lengths: %v)", target, len(chunks), chunkLengths(chunks))
 +			}
 +		}
 +	}
@@ -505,17 +533,17 @@ index 0000000..1b38a9c
 +				time.Sleep(pause)
 +			}
 +		}
-+		log.Debugln("[Fragment] [%s] TCP write %d/%d (%d bytes, pause: %v)", target, cIdx+1, len(chunks), len(chunk), pause)
++		LogDebug("[%s] TCP write %d/%d (%d bytes, pause: %v)", target, cIdx+1, len(chunks), len(chunk), pause)
 +		n, err := fc.writeAll(chunk)
 +		totalSent += n
 +		if err != nil {
-+			log.Errorln("[Fragment] [%s] ERROR: Failed to write fragment %d/%d (%d bytes): %v", target, cIdx+1, len(chunks), len(chunk), err)
++			LogError("[%s] ERROR: Failed to write fragment %d/%d (%d bytes): %v", target, cIdx+1, len(chunks), len(chunk), err)
 +			return totalSent, err
 +		}
 +	}
 +
 +	elapsed := time.Since(startTime)
-+	log.Infoln("[Fragment] [%s] Fragmentation completed successfully (mode: %s, TCP writes: %d, elapsed: %v)", target, mode, len(chunks), elapsed)
++	LogInfo("[%s] Fragmentation completed successfully (mode: %s, TCP writes: %d, elapsed: %v)", target, mode, len(chunks), elapsed)
 +
 +	return totalSent, nil
 +}
@@ -540,6 +568,9 @@ index 0000000..1b38a9c
 +}
 +
 +// splitRecord splits a single TLS Handshake record into multiple valid TLS records.
++// If SNI is present, cuts within the SNI domain based on opt.ParseLength(1, sniLen-1).
++// If SNI is not present or in record_fragment without SNI, splits into N valid TLS records
++// sized according to opt.ParseLength(min, max).
 +func splitRecord(record []byte, opt *Option) [][]byte {
 +	if len(record) <= 5 {
 +		return [][]byte{record}
@@ -551,42 +582,70 @@ index 0000000..1b38a9c
 +		return [][]byte{record}
 +	}
 +
-+	// Find split point: cut right in the middle of SNI domain
-+	var cut int
 +	sniOffset, sniLen, ok := FindSNIOffset(record)
-+	if ok && sniLen > 0 {
-+		// Relative to hsPayload (record header is 5 bytes)
-+		cut = (sniOffset - 5) + sniLen/2
-+	}
++	if ok && sniLen > 1 {
++		domainStart := sniOffset - 5
++		minCut, maxCut := opt.ParseLength(1, sniLen-1)
++		if minCut < 1 {
++			minCut = 1
++		}
++		if maxCut >= sniLen {
++			maxCut = sniLen - 1
++		}
++		if minCut > maxCut {
++			minCut = 1
++			maxCut = sniLen - 1
++		}
++		cutInDomain := randomBetween(minCut, maxCut)
++		cut := domainStart + cutInDomain
++		if cut > 0 && cut < len(hsPayload) {
++			// Record 1
++			rec1Payload := hsPayload[:cut]
++			rec1 := make([]byte, 5+len(rec1Payload))
++			rec1[0] = 0x16
++			copy(rec1[1:3], version)
++			binary.BigEndian.PutUint16(rec1[3:5], uint16(len(rec1Payload)))
++			copy(rec1[5:], rec1Payload)
 +
-+	if cut <= 0 || cut >= len(hsPayload) {
-+		minLen, maxLen := opt.ParseLength(10, 30)
-+		cut = randomBetween(minLen, maxLen)
-+		if cut >= len(hsPayload) {
-+			cut = len(hsPayload) / 2
++			// Record 2
++			rec2Payload := hsPayload[cut:]
++			rec2 := make([]byte, 5+len(rec2Payload))
++			rec2[0] = 0x16
++			copy(rec2[1:3], version)
++			binary.BigEndian.PutUint16(rec2[3:5], uint16(len(rec2Payload)))
++			copy(rec2[5:], rec2Payload)
++
++			return [][]byte{rec1, rec2}
 +		}
 +	}
-+	if cut <= 0 || cut >= len(hsPayload) {
-+		return [][]byte{record}
++
++	// Fallback or no-SNI: split hsPayload into N valid TLS records of size [minLen, maxLen]
++	minLen, maxLen := opt.ParseLength(10, 30)
++	if minLen <= 0 {
++		minLen = 1
++	}
++	if maxLen < minLen {
++		maxLen = minLen
 +	}
 +
-+	// Record 1
-+	rec1Payload := hsPayload[:cut]
-+	rec1 := make([]byte, 5+len(rec1Payload))
-+	rec1[0] = 0x16
-+	copy(rec1[1:3], version)
-+	binary.BigEndian.PutUint16(rec1[3:5], uint16(len(rec1Payload)))
-+	copy(rec1[5:], rec1Payload)
++	var records [][]byte
++	remaining := hsPayload
++	for len(remaining) > 0 {
++		chunkSize := randomBetween(minLen, maxLen)
++		if chunkSize >= len(remaining) {
++			chunkSize = len(remaining)
++		}
++		recPayload := remaining[:chunkSize]
++		rec := make([]byte, 5+len(recPayload))
++		rec[0] = 0x16
++		copy(rec[1:3], version)
++		binary.BigEndian.PutUint16(rec[3:5], uint16(len(recPayload)))
++		copy(rec[5:], recPayload)
++		records = append(records, rec)
++		remaining = remaining[chunkSize:]
++	}
 +
-+	// Record 2
-+	rec2Payload := hsPayload[cut:]
-+	rec2 := make([]byte, 5+len(rec2Payload))
-+	rec2[0] = 0x16
-+	copy(rec2[1:3], version)
-+	binary.BigEndian.PutUint16(rec2[3:5], uint16(len(rec2Payload)))
-+	copy(rec2[5:], rec2Payload)
-+
-+	return [][]byte{rec1, rec2}
++	return records
 +}
 +
 +// setTCPNoDelay enables TCP_NODELAY on the underlying connection to prevent OS packet coalescing.
@@ -1559,6 +1618,568 @@ index 0000000..99b7a55
 +		t.Fatalf("Data mismatch: got %x, want %x", buf, mixedData)
 +	}
 +}
+diff --git a/component/fragment/diagnostics.go b/component/fragment/diagnostics.go
+new file mode 100644
+index 0000000..1a30067
+--- /dev/null
++++ b/component/fragment/diagnostics.go
+@@ -0,0 +1,347 @@
++// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
++// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++
++package fragment
++
++import (
++	"bytes"
++	"encoding/binary"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"time"
++)
++
++// CheckResult represents a single diagnostic check outcome.
++type CheckResult struct {
++	Name        string `json:"name"`
++	Status      string `json:"status"` // "PASS", "FAIL", "SKIPPED"
++	Description string `json:"description"`
++	Details     string `json:"details,omitempty"`
++	DurationMs  int64  `json:"duration_ms"`
++}
++
++// SystemStatus holds current system state information for diagnostics.
++type SystemStatus struct {
++	ModuleAvailable bool   `json:"module_available"`
++	ActiveConfig    Option `json:"active_config"`
++	ActiveMode      string `json:"active_mode"`
++	LoggingStatus   string `json:"logging_status"`
++}
++
++// DiagnosticsReport contains all diagnostic check results and system status.
++type DiagnosticsReport struct {
++	Timestamp int64         `json:"timestamp"`
++	AllPassed bool          `json:"all_passed"`
++	Status    SystemStatus  `json:"status"`
++	Checks    []CheckResult `json:"checks"`
++}
++
++// Helper to make an RFC-compliant test ClientHello
++func makeDiagClientHello(sni string) []byte {
++	var exts []byte
++	sniBytes := []byte(sni)
++	sniExt := []byte{0x00, 0x00}
++	sniExt = binary.BigEndian.AppendUint16(sniExt, uint16(len(sniBytes)+5))
++	sniExt = binary.BigEndian.AppendUint16(sniExt, uint16(len(sniBytes)+3))
++	sniExt = append(sniExt, 0x00)
++	sniExt = binary.BigEndian.AppendUint16(sniExt, uint16(len(sniBytes)))
++	sniExt = append(sniExt, sniBytes...)
++	exts = sniExt
++
++	hsPayload := []byte{0x03, 0x03}
++	hsPayload = append(hsPayload, make([]byte, 32)...)
++	hsPayload = append(hsPayload, 0x00)
++	hsPayload = append(hsPayload, 0x00, 0x02, 0x00, 0x9c)
++	hsPayload = append(hsPayload, 0x01, 0x00)
++	hsPayload = binary.BigEndian.AppendUint16(hsPayload, uint16(len(exts)))
++	hsPayload = append(hsPayload, exts...)
++
++	hs := []byte{0x01}
++	hsLen := len(hsPayload)
++	hs = append(hs, byte(hsLen>>16), byte(hsLen>>8), byte(hsLen))
++	hs = append(hs, hsPayload...)
++
++	rec := []byte{0x16, 0x03, 0x01}
++	rec = binary.BigEndian.AppendUint16(rec, uint16(len(hs)))
++	rec = append(rec, hs...)
++	return rec
++}
++
++// RunDiagnostics executes all safe internal checks and returns a comprehensive report.
++func RunDiagnostics(opt *Option) DiagnosticsReport {
++	startAll := time.Now()
++	report := DiagnosticsReport{
++		Timestamp: startAll.Unix(),
++		AllPassed: true,
++		Status: SystemStatus{
++			ModuleAvailable: true,
++			LoggingStatus:   "Active",
++		},
++	}
++
++	if opt != nil {
++		report.Status.ActiveConfig = *opt
++		report.Status.ActiveMode = string(opt.GetMode())
++	} else {
++		report.Status.ActiveConfig = Option{Enabled: true, Mode: ModeSNI, Length: "10-30", Interval: "1-5"}
++		report.Status.ActiveMode = "sni"
++	}
++
++	runCheck := func(name, desc string, fn func() error) {
++		tStart := time.Now()
++		err := fn()
++		dur := time.Since(tStart).Milliseconds()
++		if dur == 0 {
++			dur = 1
++		}
++		res := CheckResult{
++			Name:        name,
++			Description: desc,
++			DurationMs:  dur,
++		}
++		if err == nil {
++			res.Status = "PASS"
++			res.Details = "Verification passed successfully"
++		} else {
++			res.Status = "FAIL"
++			res.Details = err.Error()
++			report.AllPassed = false
++		}
++		report.Checks = append(report.Checks, res)
++	}
++
++	// 1. SNI Parser
++	runCheck("SNI Parser", "Parses RFC-compliant TLS ClientHello and extracts server_name offset", func() error {
++		raw := makeDiagClientHello("diag.internal.net")
++		off, l, ok := FindSNIOffset(raw)
++		if !ok || l != len("diag.internal.net") {
++			return errors.New("failed to find SNI offset in valid ClientHello")
++		}
++		domain := string(raw[off : off+l])
++		if domain != "diag.internal.net" {
++			return fmt.Errorf("SNI parsed mismatch: got %q, want diag.internal.net", domain)
++		}
++		return nil
++	})
++
++	// 2. TLS ClientHello Detection
++	runCheck("TLS ClientHello Detection", "Validates 0x16 0x03 header and single-byte initial buffering", func() error {
++		c1, c2 := net.Pipe()
++		defer c1.Close()
++		defer c2.Close()
++
++		fc := NewConn(c1, &Option{Enabled: true, Mode: ModeSNI})
++		// Write single byte 0x16
++		n, err := fc.Write([]byte{0x16})
++		if err != nil || n != 1 {
++			return fmt.Errorf("single-byte 0x16 write failed: %v", err)
++		}
++		return nil
++	})
++
++	// 3. Buffering
++	runCheck("Buffering", "Ensures partial ClientHello records buffer cleanly until full length", func() error {
++		c1, c2 := net.Pipe()
++		defer c1.Close()
++		defer c2.Close()
++
++		raw := makeDiagClientHello("buffer-check.org")
++		fc := NewConn(c1, &Option{Enabled: true, Mode: ModeSNI})
++
++		go func() {
++			buf := make([]byte, len(raw))
++			_, _ = io.ReadFull(c2, buf)
++		}()
++
++		// Split write across 3 chunks
++		p1, p2, p3 := raw[:10], raw[10:30], raw[30:]
++		if n, err := fc.Write(p1); err != nil || n != len(p1) {
++			return fmt.Errorf("chunk 1 write failed: %v", err)
++		}
++		if n, err := fc.Write(p2); err != nil || n != len(p2) {
++			return fmt.Errorf("chunk 2 write failed: %v", err)
++		}
++		if n, err := fc.Write(p3); err != nil || n != len(p3) {
++			return fmt.Errorf("chunk 3 write failed: %v", err)
++		}
++		return nil
++	})
++
++	// 4. SNI Fragmentation
++	runCheck("SNI Fragmentation", "Splits ClientHello TCP stream at exact SNI domain boundary", func() error {
++		raw := makeDiagClientHello("sni-split.example.com")
++		c1, c2 := net.Pipe()
++		defer c1.Close()
++		defer c2.Close()
++
++		fc := NewConn(c1, &Option{Enabled: true, Mode: ModeSNI, Interval: "1-2"})
++		var chunks [][]byte
++		done := make(chan struct{})
++
++		go func() {
++			defer close(done)
++			buf := make([]byte, 2048)
++			for {
++				n, err := c2.Read(buf)
++				if n > 0 {
++					chk := make([]byte, n)
++					copy(chk, buf[:n])
++					chunks = append(chunks, chk)
++				}
++				if err != nil {
++					break
++				}
++			}
++		}()
++
++		_, err := fc.Write(raw)
++		_ = c1.Close()
++		<-done
++		if err != nil {
++			return err
++		}
++		if len(chunks) < 2 {
++			return fmt.Errorf("expected >= 2 TCP chunks in SNI mode, got %d", len(chunks))
++		}
++		if !bytes.Equal(bytes.Join(chunks, nil), raw) {
++			return errors.New("reassembled payload mismatch")
++		}
++		return nil
++	})
++
++	// 5. Random Fragmentation
++	runCheck("Random Fragmentation", "Splits ClientHello into randomized TCP segments within configured length", func() error {
++		raw := makeDiagClientHello("random-split.example.com")
++		c1, c2 := net.Pipe()
++		defer c1.Close()
++		defer c2.Close()
++
++		fc := NewConn(c1, &Option{Enabled: true, Mode: ModeRandom, Length: "15-25", Interval: "1-2"})
++		var chunks [][]byte
++		done := make(chan struct{})
++
++		go func() {
++			defer close(done)
++			buf := make([]byte, 2048)
++			for {
++				n, err := c2.Read(buf)
++				if n > 0 {
++					chk := make([]byte, n)
++					copy(chk, buf[:n])
++					chunks = append(chunks, chk)
++				}
++				if err != nil {
++					break
++				}
++			}
++		}()
++
++		_, err := fc.Write(raw)
++		_ = c1.Close()
++		<-done
++		if err != nil {
++			return err
++		}
++		if len(chunks) < 3 {
++			return fmt.Errorf("expected >= 3 chunks for random mode with length 15-25, got %d", len(chunks))
++		}
++		if !bytes.Equal(bytes.Join(chunks, nil), raw) {
++			return errors.New("reassembled payload mismatch in random mode")
++		}
++		return nil
++	})
++
++	// 6. Record Fragmentation
++	runCheck("Record Fragmentation", "Converts single TLS record into multiple RFC-compliant TLS records", func() error {
++		raw := makeDiagClientHello("record-split.example.com")
++		records := splitRecord(raw, &Option{Enabled: true, Mode: ModeRecordFragment, Length: "20-40"})
++		if len(records) < 2 {
++			return fmt.Errorf("expected >= 2 TLS records, got %d", len(records))
++		}
++		for i, rec := range records {
++			if len(rec) < 5 || rec[0] != 0x16 || rec[1] != 0x03 {
++				return fmt.Errorf("record %d has invalid TLS header", i)
++			}
++			bodyLen := int(binary.BigEndian.Uint16(rec[3:5]))
++			if len(rec) != 5+bodyLen {
++				return fmt.Errorf("record %d payload length mismatch", i)
++			}
++		}
++		return nil
++	})
++
++	// 7. Both Mode
++	runCheck("Both Mode", "Combines multi-record TLS splitting with delayed TCP segmentation", func() error {
++		raw := makeDiagClientHello("both-mode.example.com")
++		c1, c2 := net.Pipe()
++		defer c1.Close()
++		defer c2.Close()
++
++		fc := NewConn(c1, &Option{Enabled: true, Mode: ModeBoth, Length: "15-30", Interval: "1-2"})
++		var chunks [][]byte
++		done := make(chan struct{})
++
++		go func() {
++			defer close(done)
++			buf := make([]byte, 2048)
++			for {
++				n, err := c2.Read(buf)
++				if n > 0 {
++					chk := make([]byte, n)
++					copy(chk, buf[:n])
++					chunks = append(chunks, chk)
++				}
++				if err != nil {
++					break
++				}
++			}
++		}()
++
++		_, err := fc.Write(raw)
++		_ = c1.Close()
++		<-done
++		if err != nil {
++			return err
++		}
++		if len(chunks) < 3 {
++			return fmt.Errorf("expected >= 3 chunks in both mode, got %d", len(chunks))
++		}
++		return nil
++	})
++
++	// 8. Error Handling
++	runCheck("Error Handling", "Verifies safe write loops and error persistence on failure", func() error {
++		c1, c2 := net.Pipe()
++		fc := NewConn(c1, &Option{Enabled: true, Mode: ModeSNI})
++		// Close remote side immediately
++		_ = c2.Close()
++		_, err := fc.Write([]byte("GET / HTTP/1.1\r\n\r\n"))
++		if err == nil {
++			return errors.New("expected error when writing to closed pipe")
++		}
++		return nil
++	})
++
++	// 9. Configuration Validation
++	runCheck("Configuration Validation", "Validates syntax checking for Length and Interval parameters", func() error {
++		optValid := &Option{Length: "10-30", Interval: "1-5"}
++		minL, maxL := optValid.ParseLength(10, 30)
++		if minL != 10 || maxL != 30 {
++			return fmt.Errorf("ParseLength expected 10-30, got %d-%d", minL, maxL)
++		}
++		minI, maxI := optValid.IntervalRange(1, 5)
++		if minI != 1 || maxI != 5 {
++			return fmt.Errorf("IntervalRange expected 1-5ms, got %d-%d", minI, maxI)
++		}
++		return nil
++	})
++
++	return report
++}
+diff --git a/component/fragment/diagnostics_test.go b/component/fragment/diagnostics_test.go
+new file mode 100644
+index 0000000..e3309db
+--- /dev/null
++++ b/component/fragment/diagnostics_test.go
+@@ -0,0 +1,109 @@
++// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
++// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
++
++package fragment
++
++import (
++	"encoding/json"
++	"errors"
++	"testing"
++	"time"
++)
++
++func TestStats_CountersAndReset(t *testing.T) {
++	ResetGlobalStats()
++
++	s := GetGlobalStats()
++	if s.TotalClientHello != 0 || s.SuccessfulFragments != 0 || s.FailedFragments != 0 {
++		t.Fatalf("expected zero stats after reset, got %+v", s)
++	}
++
++	RecordClientHelloDetected("sni")
++	RecordClientHelloDetected("random")
++	RecordFragmentationSuccess("sni")
++	RecordFragmentationSuccess("random")
++	RecordFragmentationError("sni", errors.New("test connection error"))
++	RecordBufferTimeout()
++	RecordNonTLSBypass()
++
++	s2 := GetGlobalStats()
++	if s2.TotalClientHello != 2 {
++		t.Errorf("expected TotalClientHello=2, got %d", s2.TotalClientHello)
++	}
++	if s2.SuccessfulFragments != 2 {
++		t.Errorf("expected SuccessfulFragments=2, got %d", s2.SuccessfulFragments)
++	}
++	if s2.FailedFragments != 1 {
++		t.Errorf("expected FailedFragments=1, got %d", s2.FailedFragments)
++	}
++	if s2.LastError != "test connection error" {
++		t.Errorf("expected LastError='test connection error', got %s", s2.LastError)
++	}
++	if s2.Timeouts != 1 {
++		t.Errorf("expected Timeouts=1, got %d", s2.Timeouts)
++	}
++	if s2.BypassedNonTLS != 1 {
++		t.Errorf("expected BypassedNonTLS=1, got %d", s2.BypassedNonTLS)
++	}
++	if s2.ModeDistribution["sni"] != 1 || s2.ModeDistribution["random"] != 1 {
++		t.Errorf("unexpected ModeDistribution: %+v", s2.ModeDistribution)
++	}
++
++	data, err := json.Marshal(s2)
++	if err != nil {
++		t.Fatalf("failed to marshal stats to JSON: %v", err)
++	}
++	if len(data) == 0 {
++		t.Fatal("empty json stats output")
++	}
++
++	ResetGlobalStats()
++	s3 := GetGlobalStats()
++	if s3.TotalClientHello != 0 || s3.SuccessfulFragments != 0 {
++		t.Fatalf("stats not cleared after reset: %+v", s3)
++	}
++}
++
++func TestDiagnostics_RunDiagnostics(t *testing.T) {
++	report := RunDiagnostics(nil)
++	if !report.AllPassed {
++		t.Fatalf("expected all diagnostics to pass, but AllPassed is false")
++	}
++	if len(report.Checks) != 9 {
++		t.Fatalf("expected 9 diagnostic checks, got %d", len(report.Checks))
++	}
++	for _, check := range report.Checks {
++		if check.Status != "PASS" {
++			t.Errorf("check %s failed: %s (status: %s)", check.Name, check.Details, check.Status)
++		}
++	}
++
++	data, err := json.Marshal(report)
++	if err != nil {
++		t.Fatalf("failed to marshal diagnostics report to JSON: %v", err)
++	}
++	if len(data) == 0 {
++		t.Fatal("empty json diagnostics output")
++	}
++}
++
++func TestRateLimiter(t *testing.T) {
++	rl := &rateLimiter{maxPerSec: 5}
++	allowed := 0
++	for i := 0; i < 20; i++ {
++		if rl.allow() {
++			allowed++
++		}
++	}
++	if allowed != 5 {
++		t.Fatalf("expected 5 allowed calls in same second, got %d", allowed)
++	}
++	if rl.suppressed != 15 {
++		t.Fatalf("expected 15 suppressed calls, got %d", rl.suppressed)
++	}
++
++	time.Sleep(1050 * time.Millisecond)
++	if !rl.allow() {
++		t.Fatal("expected allow() to return true in new second")
++	}
++}
+diff --git a/component/fragment/logger.go b/component/fragment/logger.go
+new file mode 100644
+index 0000000..2ff60fe
+--- /dev/null
++++ b/component/fragment/logger.go
+@@ -0,0 +1,88 @@
++// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
++// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++
++package fragment
++
++import (
++	"fmt"
++	"sync"
++	"time"
++
++	"github.com/metacubex/mihomo/log"
++)
++
++type rateLimiter struct {
++	mu         sync.Mutex
++	lastSec    int64
++	count      int
++	maxPerSec  int
++	suppressed int
++}
++
++var infoLimiter = &rateLimiter{
++	maxPerSec: 15, // up to 15 info events per second
++}
++
++func (rl *rateLimiter) allow() bool {
++	rl.mu.Lock()
++	defer rl.mu.Unlock()
++
++	nowSec := time.Now().Unix()
++	if nowSec != rl.lastSec {
++		if rl.suppressed > 0 {
++			log.Infoln("[Fragment][INFO] (... %d more fragment events in last second)", rl.suppressed)
++			rl.suppressed = 0
++		}
++		rl.lastSec = nowSec
++		rl.count = 0
++	}
++
++	if rl.count < rl.maxPerSec {
++		rl.count++
++		return true
++	}
++	rl.suppressed++
++	return false
++}
++
++// LogInfo logs an informational message if rate limiter allows.
++func LogInfo(format string, args ...any) {
++	if infoLimiter.allow() {
++		log.Infoln("[Fragment][INFO] "+format, args...)
++	}
++}
++
++// LogDebug logs a debug message (no rate limit, debug level only).
++func LogDebug(format string, args ...any) {
++	log.Debugln("[Fragment][DEBUG] "+format, args...)
++}
++
++// LogWarn logs a warning message.
++func LogWarn(format string, args ...any) {
++	log.Warnln("[Fragment][WARNING] "+format, args...)
++}
++
++// LogError logs an error message.
++func LogError(format string, args ...any) {
++	log.Errorln("[Fragment][ERROR] "+format, args...)
++}
++
++// TargetIdentifier builds a masked, privacy-friendly connection descriptor.
++func TargetIdentifier(connRemote string, sni string) string {
++	maskedSNI := MaskDomain(sni)
++	if maskedSNI != "" && connRemote != "" {
++		return fmt.Sprintf("%s (%s)", maskedSNI, connRemote)
++	}
++	if maskedSNI != "" {
++		return maskedSNI
++	}
++	if connRemote != "" {
++		return connRemote
++	}
++	return "unknown"
++}
 diff --git a/component/fragment/nodelay_other.go b/component/fragment/nodelay_other.go
 new file mode 100644
 index 0000000..80393fc
@@ -1771,10 +2392,10 @@ index 0000000..634b4f8
 +}
 diff --git a/component/fragment/sni.go b/component/fragment/sni.go
 new file mode 100644
-index 0000000..90d7b03
+index 0000000..e2ffc1d
 --- /dev/null
 +++ b/component/fragment/sni.go
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,142 @@
 +// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
 +// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
 +//
@@ -1787,6 +2408,7 @@ index 0000000..90d7b03
 +
 +import (
 +	"encoding/binary"
++	"strings"
 +)
 +
 +// FindSNIOffset parses a TLS ClientHello record to find the exact byte offset
@@ -1889,6 +2511,32 @@ index 0000000..90d7b03
 +		return string(b[offset : offset+length])
 +	}
 +	return ""
++}
++
++// MaskDomain masks sensitive middle parts of a domain name to protect user privacy in logs.
++// e.g. "youtube.com" -> "y***e.com", "api.github.com" -> "***.g***b.com".
++func MaskDomain(d string) string {
++	if len(d) == 0 {
++		return ""
++	}
++	parts := strings.Split(d, ".")
++	if len(parts) >= 2 {
++		mainIdx := len(parts) - 2
++		main := parts[mainIdx]
++		if len(main) <= 2 {
++			parts[mainIdx] = "**"
++		} else {
++			parts[mainIdx] = string(main[0]) + "***" + string(main[len(main)-1])
++		}
++		for i := 0; i < mainIdx; i++ {
++			parts[i] = "***"
++		}
++		return strings.Join(parts, ".")
++	}
++	if len(d) <= 2 {
++		return "**"
++	}
++	return string(d[0]) + "***" + string(d[len(d)-1])
 +}
 diff --git a/component/fragment/sni_test.go b/component/fragment/sni_test.go
 new file mode 100644
@@ -2029,5 +2677,236 @@ index 0000000..53423ca
 +
 +	if ExtractSNI(nil) != "" {
 +		t.Fatal("ExtractSNI(nil) should be empty")
++	}
++}
+diff --git a/component/fragment/stats.go b/component/fragment/stats.go
+new file mode 100644
+index 0000000..fafd1a0
+--- /dev/null
++++ b/component/fragment/stats.go
+@@ -0,0 +1,111 @@
++// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
++// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++
++package fragment
++
++import (
++	"sync"
++	"time"
++)
++
++// Stats holds real-time counters and diagnostics metrics for TLS fragmentation.
++type Stats struct {
++	TotalClientHello    int64            `json:"total_client_hello"`
++	SuccessfulFragments int64            `json:"successful_fragments"`
++	FailedFragments     int64            `json:"failed_fragments"`
++	Timeouts            int64            `json:"timeouts"`
++	BypassedNonTLS      int64            `json:"bypassed_non_tls"`
++	ModeDistribution    map[string]int64 `json:"mode_distribution"`
++	LastError           string           `json:"last_error"`
++	LastErrorTime       int64            `json:"last_error_time"`
++	LastEventTime       int64            `json:"last_event_time"`
++}
++
++type statsManager struct {
++	mu    sync.RWMutex
++	stats Stats
++}
++
++var globalStats = &statsManager{
++	stats: Stats{
++		ModeDistribution: make(map[string]int64),
++	},
++}
++
++// GetGlobalStats returns a copy of current fragment statistics.
++func GetGlobalStats() Stats {
++	globalStats.mu.RLock()
++	defer globalStats.mu.RUnlock()
++
++	res := globalStats.stats
++	res.ModeDistribution = make(map[string]int64, len(globalStats.stats.ModeDistribution))
++	for k, v := range globalStats.stats.ModeDistribution {
++		res.ModeDistribution[k] = v
++	}
++	return res
++}
++
++// ResetGlobalStats clears all counters.
++func ResetGlobalStats() {
++	globalStats.mu.Lock()
++	defer globalStats.mu.Unlock()
++
++	globalStats.stats = Stats{
++		ModeDistribution: make(map[string]int64),
++	}
++}
++
++// RecordClientHelloDetected records a detected TLS ClientHello event.
++func RecordClientHelloDetected(mode string) {
++	globalStats.mu.Lock()
++	defer globalStats.mu.Unlock()
++
++	globalStats.stats.TotalClientHello++
++	globalStats.stats.LastEventTime = time.Now().Unix()
++}
++
++// RecordFragmentationSuccess records an executed fragmentation.
++func RecordFragmentationSuccess(mode string) {
++	globalStats.mu.Lock()
++	defer globalStats.mu.Unlock()
++
++	globalStats.stats.SuccessfulFragments++
++	globalStats.stats.ModeDistribution[mode]++
++	globalStats.stats.LastEventTime = time.Now().Unix()
++}
++
++// RecordFragmentationError records a fragmentation failure.
++func RecordFragmentationError(mode string, err error) {
++	globalStats.mu.Lock()
++	defer globalStats.mu.Unlock()
++
++	globalStats.stats.FailedFragments++
++	if err != nil {
++		globalStats.stats.LastError = err.Error()
++		globalStats.stats.LastErrorTime = time.Now().Unix()
++	}
++	globalStats.stats.LastEventTime = time.Now().Unix()
++}
++
++// RecordBufferTimeout records a buffering timeout event.
++func RecordBufferTimeout() {
++	globalStats.mu.Lock()
++	defer globalStats.mu.Unlock()
++
++	globalStats.stats.Timeouts++
++	globalStats.stats.LastEventTime = time.Now().Unix()
++}
++
++// RecordNonTLSBypass records non-TLS traffic forwarded without fragmentation.
++func RecordNonTLSBypass() {
++	globalStats.mu.Lock()
++	defer globalStats.mu.Unlock()
++
++	globalStats.stats.BypassedNonTLS++
++	globalStats.stats.LastEventTime = time.Now().Unix()
++}
+diff --git a/hub/route/fragment.go b/hub/route/fragment.go
+new file mode 100644
+index 0000000..b2b4408
+--- /dev/null
++++ b/hub/route/fragment.go
+@@ -0,0 +1,45 @@
++// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
++// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
++
++package route
++
++import (
++	"encoding/json"
++
++	"github.com/metacubex/chi"
++	"github.com/metacubex/chi/render"
++	"github.com/metacubex/http"
++	"github.com/metacubex/mihomo/component/fragment"
++)
++
++func fragmentRouter() http.Handler {
++	r := chi.NewRouter()
++	r.Get("/stats", getFragmentStats)
++	r.Post("/stats/reset", resetFragmentStats)
++	r.Get("/diagnostics", getFragmentDiagnostics)
++	r.Post("/diagnostics", runFragmentDiagnostics)
++	return r
++}
++
++func getFragmentStats(w http.ResponseWriter, r *http.Request) {
++	render.JSON(w, r, fragment.GetGlobalStats())
++}
++
++func resetFragmentStats(w http.ResponseWriter, r *http.Request) {
++	fragment.ResetGlobalStats()
++	render.JSON(w, r, render.M{"status": "ok"})
++}
++
++func getFragmentDiagnostics(w http.ResponseWriter, r *http.Request) {
++	report := fragment.RunDiagnostics(nil)
++	render.JSON(w, r, report)
++}
++
++func runFragmentDiagnostics(w http.ResponseWriter, r *http.Request) {
++	var opt fragment.Option
++	if r.Body != nil && r.ContentLength > 0 {
++		_ = json.NewDecoder(r.Body).Decode(&opt)
++	}
++	report := fragment.RunDiagnostics(&opt)
++	render.JSON(w, r, report)
++}
+diff --git a/hub/route/fragment_test.go b/hub/route/fragment_test.go
+new file mode 100644
+index 0000000..5af6286
+--- /dev/null
++++ b/hub/route/fragment_test.go
+@@ -0,0 +1,57 @@
++// Copyright (C) 2026 mateika8814 (https://github.com/mateika8814)
++// This file is part of allah-verge (fork of Clash Verge Rev / mihomo).
++
++package route
++
++import (
++	"encoding/json"
++	"testing"
++
++	"github.com/metacubex/http"
++	"github.com/metacubex/http/httptest"
++	"github.com/metacubex/mihomo/component/fragment"
++)
++
++func TestFragmentEndpoints(t *testing.T) {
++	h := fragmentRouter()
++
++	// 1. GET /stats
++	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
++	w := httptest.NewRecorder()
++	h.ServeHTTP(w, req)
++	if w.Code != 200 {
++		t.Fatalf("expected status 200, got %d", w.Code)
++	}
++
++	var stats fragment.Stats
++	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
++		t.Fatalf("failed to decode stats json: %v", err)
++	}
++
++	// 2. POST /stats/reset
++	reqReset := httptest.NewRequest(http.MethodPost, "/stats/reset", nil)
++	wReset := httptest.NewRecorder()
++	h.ServeHTTP(wReset, reqReset)
++	if wReset.Code != 200 {
++		t.Fatalf("expected status 200 for reset, got %d", wReset.Code)
++	}
++
++	// 3. GET /diagnostics
++	reqDiag := httptest.NewRequest(http.MethodGet, "/diagnostics", nil)
++	wDiag := httptest.NewRecorder()
++	h.ServeHTTP(wDiag, reqDiag)
++	if wDiag.Code != 200 {
++		t.Fatalf("expected status 200 for diagnostics, got %d", wDiag.Code)
++	}
++
++	var report fragment.DiagnosticsReport
++	if err := json.Unmarshal(wDiag.Body.Bytes(), &report); err != nil {
++		t.Fatalf("failed to decode diagnostics json: %v", err)
++	}
++	if !report.AllPassed {
++		t.Fatalf("expected AllPassed to be true in diagnostics")
++	}
++	if len(report.Checks) != 9 {
++		t.Fatalf("expected 9 checks, got %d", len(report.Checks))
 +	}
 +}

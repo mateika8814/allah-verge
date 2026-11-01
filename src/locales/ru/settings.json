@@ -153,7 +153,28 @@
               "invalidLength": "Неверный диапазон длины: формат N-M (N ≤ M, мин ≥ 1)",
               "invalidInterval": "Неверный диапазон интервала: формат N-M (N ≤ M, мин ≥ 0)",
               "stockCoreWarning": "Внимание: Подключённое ядро не поддерживает фрагментацию TLS. Используйте ядро из форка."
-            }
+            },
+            "statsTitle": "Статистика в реальном времени",
+            "statsReset": "Сбросить статистику",
+            "statsRefresh": "Обновить",
+            "statsResetSuccess": "Статистика успешно сброшена",
+            "totalClientHello": "Обработано ClientHello",
+            "successfulFragments": "Успешно фрагментировано",
+            "failedFragments": "Ошибок / сбоев",
+            "timeouts": "Таймаутов буферизации",
+            "bypassedNonTls": "Пропущено (не TLS)",
+            "modeDistribution": "Распределение по режимам",
+            "lastEvent": "Последнее событие",
+            "lastError": "Последняя ошибка",
+            "diagTitle": "Диагностика фрагментации",
+            "diagRun": "Запустить диагностику",
+            "diagRunning": "Выполняется диагностика...",
+            "diagAllPassed": "Все 9 проверок успешно пройдены",
+            "diagSomeFailed": "Обнаружены ошибки при диагностике",
+            "diagCheckName": "Проверка",
+            "diagStatus": "Статус",
+            "diagDuration": "Время",
+            "diagDetails": "Детали"
           }
         },
         "tooltips": {

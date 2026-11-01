@@ -1,4 +1,5 @@
 import { Channel } from '@tauri-apps/api/core'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import dayjs from 'dayjs'
 
 import { showNotice } from '@/services/notice-service'
@@ -500,4 +501,87 @@ export async function checkMediaUnlock(onComplete: Channel<UnlockItem>) {
 
 export async function checkMediaUnlockItem(name: string) {
   return commands.checkMediaUnlockItem(name)
+}
+
+export interface FragmentStats {
+  total_client_hello: number
+  successful_fragments: number
+  failed_fragments: number
+  timeouts: number
+  bypassed_non_tls: number
+  mode_distribution: Record<string, number>
+  last_error?: string
+  last_error_time?: number
+  last_event_time?: number
+}
+
+export interface DiagnosticCheckResult {
+  name: string
+  status: 'PASS' | 'FAIL' | 'SKIPPED'
+  description: string
+  details?: string
+  duration_ms: number
+}
+
+export interface DiagnosticsReport {
+  timestamp: number
+  all_passed: boolean
+  status: {
+    module_available: boolean
+    active_mode: string
+    logging_status: string
+  }
+  checks: DiagnosticCheckResult[]
+}
+
+export async function getFragmentStats(): Promise<FragmentStats> {
+  const info = await getClashInfo()
+  const headers: Record<string, string> = {}
+  if (info.secret) {
+    headers['Authorization'] = `Bearer ${info.secret}`
+  }
+  const url = `http://${info.server}/fragment/stats`
+  const res = await tauriFetch(url, { headers })
+  if (!res.ok) {
+    throw new Error(`Failed to fetch fragment stats: ${res.statusText}`)
+  }
+  return res.json()
+}
+
+export async function resetFragmentStats(): Promise<void> {
+  const info = await getClashInfo()
+  const headers: Record<string, string> = {}
+  if (info.secret) {
+    headers['Authorization'] = 'Bearer ' + info.secret
+  }
+  const url = 'http://' + info.server + '/fragment/stats/reset'
+  const res = await tauriFetch(url, {
+    method: 'POST',
+    headers,
+  })
+  if (!res.ok) {
+    throw new Error('Failed to reset fragment stats: ' + res.statusText)
+  }
+}
+
+export async function runFragmentDiagnostics(
+  opt?: any,
+): Promise<DiagnosticsReport> {
+  const info = await getClashInfo()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  if (info.secret) {
+    headers['Authorization'] = 'Bearer ' + info.secret
+  }
+  const url = 'http://' + info.server + '/fragment/diagnostics'
+  const res = await tauriFetch(url, {
+    method: 'POST',
+    headers,
+    body: opt ? JSON.stringify(opt) : undefined,
+  })
+  if (!res.ok) {
+    throw new Error('Failed to run fragment diagnostics: ' + res.statusText)
+  }
+  return res.json()
 }

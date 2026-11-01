@@ -31,9 +31,37 @@ const Item = styled(Box)(({ theme: { palette, typography } }) => ({
   '& .type[data-type="info"], & .type[data-type="inf"]': {
     color: palette.info.main,
   },
+  '& .fragment-chip': {
+    display: 'inline-flex',
+    alignItems: 'center',
+    marginLeft: 8,
+    padding: '1px 6px',
+    borderRadius: 4,
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    letterSpacing: '0.04em',
+    color: '#fff',
+    background: 'linear-gradient(135deg, #7c4dff 0%, #00b0ff 100%)',
+    boxShadow: '0 1px 3px rgba(124, 77, 255, 0.3)',
+    verticalAlign: 'middle',
+  },
   '& .data': {
     color: palette.text.primary,
     overflowWrap: 'anywhere',
+  },
+  '& .fragment-level-info': {
+    color: palette.mode === 'dark' ? '#80d8ff' : '#0277bd',
+  },
+  '& .fragment-level-debug': {
+    color: palette.mode === 'dark' ? '#b0bec5' : '#546e7a',
+  },
+  '& .fragment-level-warn': {
+    color: palette.mode === 'dark' ? '#ffd54f' : '#f57c00',
+    fontWeight: 500,
+  },
+  '& .fragment-level-error': {
+    color: palette.mode === 'dark' ? '#ff5252' : '#d32f2f',
+    fontWeight: 600,
   },
   '& .highlight': {
     backgroundColor: palette.mode === 'dark' ? '#ffeb3b40' : '#ffeb3b90',
@@ -48,6 +76,34 @@ interface Props {
 }
 
 const LogItem = ({ value, searchState }: Props) => {
+  const isFragment = value.payload.includes('[Fragment]')
+  let cleanPayload = value.payload
+  let fragmentLevel: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR' | null = null
+
+  if (isFragment) {
+    if (value.payload.includes('[Fragment][INFO]')) {
+      fragmentLevel = 'INFO'
+      cleanPayload = cleanPayload.replace('[Fragment][INFO]', '').trim()
+    } else if (value.payload.includes('[Fragment][DEBUG]')) {
+      fragmentLevel = 'DEBUG'
+      cleanPayload = cleanPayload.replace('[Fragment][DEBUG]', '').trim()
+    } else if (
+      value.payload.includes('[Fragment][WARNING]') ||
+      value.payload.includes('WARNING:')
+    ) {
+      fragmentLevel = 'WARN'
+      cleanPayload = cleanPayload.replace('[Fragment][WARNING]', '').trim()
+    } else if (
+      value.payload.includes('[Fragment][ERROR]') ||
+      value.payload.includes('ERROR:')
+    ) {
+      fragmentLevel = 'ERROR'
+      cleanPayload = cleanPayload.replace('[Fragment][ERROR]', '').trim()
+    } else {
+      cleanPayload = cleanPayload.replace('[Fragment]', '').trim()
+    }
+  }
+
   const renderHighlightText = (text: string) => {
     if (!searchState?.text.trim()) return text
 
@@ -112,9 +168,16 @@ const LogItem = ({ value, searchState }: Props) => {
         <span className="type" data-type={value.type.toLowerCase()}>
           {renderHighlightText(value.type)}
         </span>
+        {isFragment && <span className="fragment-chip">FRAGMENT</span>}
       </div>
       <div>
-        <span className="data">{renderHighlightText(value.payload)}</span>
+        <span
+          className={`data ${
+            fragmentLevel ? `fragment-level-${fragmentLevel.toLowerCase()}` : ''
+          }`}
+        >
+          {renderHighlightText(cleanPayload)}
+        </span>
       </div>
     </Item>
   )

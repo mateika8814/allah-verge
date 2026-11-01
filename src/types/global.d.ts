@@ -161,7 +161,7 @@ interface ILogItem {
 }
 
 type LogLevel = import('tauri-plugin-mihomo-api').LogLevel
-type LogFilter = 'all' | 'debug' | 'info' | 'warn' | 'err'
+type LogFilter = 'all' | 'debug' | 'info' | 'warn' | 'err' | 'fragment'
 type LogOrder = 'asc' | 'desc'
 
 interface IClashLog {

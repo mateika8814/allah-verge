@@ -153,7 +153,28 @@
               "invalidLength": "无效长度范围: 格式 N-M (N ≤ M, 最小 ≥ 1)",
               "invalidInterval": "无效间隔范围: 格式 N-M (N ≤ M, 最小 ≥ 0)",
               "stockCoreWarning": "警告: 当前内核不支持 TLS 分片。请使用定制的 Mihomo 内核。"
-            }
+            },
+            "statsTitle": "实时统计",
+            "statsReset": "重置统计",
+            "statsRefresh": "刷新",
+            "statsResetSuccess": "统计信息已重置",
+            "totalClientHello": "已处理 ClientHello",
+            "successfulFragments": "成功分片",
+            "failedFragments": "分片失败",
+            "timeouts": "缓冲超时",
+            "bypassedNonTls": "直通(非TLS)",
+            "modeDistribution": "分片模式分布",
+            "lastEvent": "最近事件",
+            "lastError": "最近错误",
+            "diagTitle": "分片诊断测试",
+            "diagRun": "运行诊断",
+            "diagRunning": "诊断运行中...",
+            "diagAllPassed": "全部 9 项诊断检查通过",
+            "diagSomeFailed": "部分诊断检查未通过",
+            "diagCheckName": "检查项",
+            "diagStatus": "状态",
+            "diagDuration": "耗时",
+            "diagDetails": "详情"
           }
         },
         "tooltips": {

@@ -153,7 +153,28 @@
               "invalidLength": "Invalid length range: format N-M (N ≤ M, min ≥ 1)",
               "invalidInterval": "Invalid interval range: format N-M (N ≤ M, min ≥ 0)",
               "stockCoreWarning": "Warning: Connected core does not support TLS fragmentation. Please use our custom mihomo core."
-            }
+            },
+            "statsTitle": "Live Statistics",
+            "statsReset": "Reset Stats",
+            "statsRefresh": "Refresh",
+            "statsResetSuccess": "Statistics reset successfully",
+            "totalClientHello": "ClientHello Processed",
+            "successfulFragments": "Successfully Fragmented",
+            "failedFragments": "Errors / Failed",
+            "timeouts": "Buffer Timeouts",
+            "bypassedNonTls": "Bypassed (Non-TLS)",
+            "modeDistribution": "Mode Distribution",
+            "lastEvent": "Last Event",
+            "lastError": "Last Error",
+            "diagTitle": "Fragment Diagnostics",
+            "diagRun": "Run Diagnostics",
+            "diagRunning": "Running Diagnostics...",
+            "diagAllPassed": "All 9 Diagnostic Checks Passed",
+            "diagSomeFailed": "Diagnostic checks failed",
+            "diagCheckName": "Check Name",
+            "diagStatus": "Status",
+            "diagDuration": "Duration",
+            "diagDetails": "Details"
           }
         },
         "tooltips": {

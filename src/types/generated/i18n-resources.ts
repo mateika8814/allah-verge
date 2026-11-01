@@ -1286,22 +1286,43 @@ export interface TranslationResources {
               fragment: {
                 applyAll: string
                 applyAllDesc: string
+                bypassedNonTls: string
+                diagAllPassed: string
+                diagCheckName: string
+                diagDetails: string
+                diagDuration: string
+                diagRun: string
+                diagRunning: string
+                diagSomeFailed: string
+                diagStatus: string
+                diagTitle: string
                 errors: {
                   invalidInterval: string
                   invalidLength: string
                   stockCoreWarning: string
                 }
+                failedFragments: string
                 interval: string
+                lastError: string
+                lastEvent: string
                 length: string
                 mode: string
+                modeDistribution: string
                 modeRandom: string
                 modeSni: string
                 noticeDisabled: string
                 noticeEnabled: string
                 recordFragment: string
                 recordFragmentDesc: string
+                statsRefresh: string
+                statsReset: string
+                statsResetSuccess: string
+                statsTitle: string
                 subtitle: string
+                successfulFragments: string
+                timeouts: string
                 title: string
+                totalClientHello: string
               }
               ipv6: string
               logLevel: string

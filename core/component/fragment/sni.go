@@ -10,6 +10,7 @@ package fragment
 
 import (
 	"encoding/binary"
+	"strings"
 )
 
 // FindSNIOffset parses a TLS ClientHello record to find the exact byte offset
@@ -112,4 +113,30 @@ func ExtractSNI(b []byte) string {
 		return string(b[offset : offset+length])
 	}
 	return ""
+}
+
+// MaskDomain masks sensitive middle parts of a domain name to protect user privacy in logs.
+// e.g. "youtube.com" -> "y***e.com", "api.github.com" -> "***.g***b.com".
+func MaskDomain(d string) string {
+	if len(d) == 0 {
+		return ""
+	}
+	parts := strings.Split(d, ".")
+	if len(parts) >= 2 {
+		mainIdx := len(parts) - 2
+		main := parts[mainIdx]
+		if len(main) <= 2 {
+			parts[mainIdx] = "**"
+		} else {
+			parts[mainIdx] = string(main[0]) + "***" + string(main[len(main)-1])
+		}
+		for i := 0; i < mainIdx; i++ {
+			parts[i] = "***"
+		}
+		return strings.Join(parts, ".")
+	}
+	if len(d) <= 2 {
+		return "**"
+	}
+	return string(d[0]) + "***" + string(d[len(d)-1])
 }
