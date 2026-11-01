@@ -12,7 +12,6 @@ import (
 	"encoding/binary"
 	"net"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -22,6 +21,8 @@ type fragConn struct {
 	buf          []byte
 	mu           sync.Mutex
 	fragmentDone bool
+	closed       bool
+	timer        *time.Timer
 }
 
 // NewConn wraps a net.Conn with fragmentation capabilities according to Option.
@@ -34,6 +35,36 @@ func NewConn(c net.Conn, opt *Option) net.Conn {
 		Conn: c,
 		opt:  *opt,
 	}
+}
+
+func (fc *fragConn) resetTimer() {
+	timeout := fc.opt.GetBufferTimeout()
+	if fc.timer == nil {
+		fc.timer = time.AfterFunc(timeout, fc.onBufferTimeout)
+	} else {
+		fc.timer.Reset(timeout)
+	}
+}
+
+func (fc *fragConn) stopTimer() {
+	if fc.timer != nil {
+		fc.timer.Stop()
+	}
+}
+
+func (fc *fragConn) onBufferTimeout() {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	if fc.fragmentDone || fc.closed || len(fc.buf) == 0 {
+		return
+	}
+
+	fc.fragmentDone = true
+	toWrite := fc.buf
+	fc.buf = nil
+
+	_, _ = fc.Conn.Write(toWrite)
 }
 
 func (fc *fragConn) Write(p []byte) (int, error) {
@@ -51,28 +82,54 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 	if len(fc.buf) == 0 {
 		if len(p) < 2 || p[0] != 0x16 || p[1] != 0x03 {
 			fc.fragmentDone = true
+			fc.stopTimer()
 			return fc.Conn.Write(p)
 		}
 	}
 
-	// Buffer incoming chunks (e.g. uTLS / Reality writing in small pieces)
+	prevLen := len(fc.buf)
 	fc.buf = append(fc.buf, p...)
 
-	// We need at least 5 bytes to determine the TLS record length
+	// False-positive protection on non-TLS streams:
+	// As soon as at least 6 bytes are buffered, verify that byte 5 is 0x01 (ClientHello)
+	// and record length (bytes 3-4) does not exceed 16384 (RFC 5246 max plaintext fragment).
+	// If it doesn't match, this is not a ClientHello; flush immediately as-is and mark done.
+	if len(fc.buf) >= 6 {
+		recLen := int(binary.BigEndian.Uint16(fc.buf[3:5]))
+		if fc.buf[5] != 0x01 || recLen > 16384 || recLen < 4 {
+			fc.stopTimer()
+			fc.fragmentDone = true
+			toWrite := fc.buf
+			fc.buf = nil
+			nSent, err := fc.Conn.Write(toWrite)
+			n := nSent - prevLen
+			if n < 0 {
+				n = 0
+			}
+			if n > len(p) {
+				n = len(p)
+			}
+			return n, err
+		}
+	}
+
+	// We need at least 5 bytes to determine total TLS record length
 	if len(fc.buf) < 5 {
+		fc.resetTimer()
 		return len(p), nil
 	}
 
 	recLen := int(binary.BigEndian.Uint16(fc.buf[3:5]))
 	totalExpected := 5 + recLen
 
-	// If we haven't received the full ClientHello record yet, keep buffering
+	// If we haven't received the full ClientHello record yet, keep buffering and reset timeout
 	if len(fc.buf) < totalExpected {
+		fc.resetTimer()
 		return len(p), nil
 	}
 
 	// Full ClientHello record accumulated!
-	// Mark done so any subsequent Write calls pass through with zero overhead.
+	fc.stopTimer()
 	fc.fragmentDone = true
 
 	// Ensure TCP_NODELAY is active so the OS stack won't coalesce fragments
@@ -80,36 +137,66 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 
 	helloRecord := fc.buf[:totalExpected]
 	extraBytes := fc.buf[totalExpected:]
+	fc.buf = nil
 
 	// Fragment and send the ClientHello
-	if err := fc.sendFragmented(helloRecord); err != nil {
-		return len(p), err
+	nFrag, err := fc.sendFragmented(helloRecord)
+	if err != nil {
+		n := nFrag - prevLen
+		if n < 0 {
+			n = 0
+		}
+		if n > len(p) {
+			n = len(p)
+		}
+		return n, err
 	}
 
 	// If there were any extra bytes buffered beyond the ClientHello record, send them directly
 	if len(extraBytes) > 0 {
-		if _, err := fc.Conn.Write(extraBytes); err != nil {
-			return len(p), err
+		nExtra, err := fc.Conn.Write(extraBytes)
+		if err != nil {
+			n := (nFrag + nExtra) - prevLen
+			if n < 0 {
+				n = 0
+			}
+			if n > len(p) {
+				n = len(p)
+			}
+			return n, err
 		}
 	}
 
 	return len(p), nil
 }
 
-func (fc *fragConn) sendFragmented(record []byte) error {
-	defer func() {
-		// Clear buffer to free memory
+func (fc *fragConn) Close() error {
+	fc.mu.Lock()
+	fc.stopTimer()
+	var flushErr error
+	if !fc.fragmentDone && len(fc.buf) > 0 {
+		fc.fragmentDone = true
+		toWrite := fc.buf
 		fc.buf = nil
-	}()
+		_, flushErr = fc.Conn.Write(toWrite)
+	}
+	fc.closed = true
+	fc.mu.Unlock()
 
+	closeErr := fc.Conn.Close()
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
+}
+
+func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 	// Fallback check: if record is corrupted or too short, write as-is
 	if len(record) < 5 || record[0] != 0x16 || record[1] != 0x03 {
-		_, err := fc.Conn.Write(record)
-		return err
+		return fc.Conn.Write(record)
 	}
 
 	mode := fc.opt.GetMode()
-	interval := fc.opt.ParseInterval(1, 5)
 	isRecordFrag := fc.opt.IsRecordFragment()
 
 	// Step 1: If Record-Fragment is enabled, convert the single TLS record
@@ -137,6 +224,7 @@ func (fc *fragConn) sendFragmented(record []byte) error {
 		}
 
 	case ModeRandom:
+		// Conflict resolution: if record-fragment is also true, split into records, then each into chunks
 		if isRecordFrag {
 			for _, rec := range recordsToSend {
 				chunks = append(chunks, splitRandom(rec, &fc.opt)...)
@@ -148,6 +236,7 @@ func (fc *fragConn) sendFragmented(record []byte) error {
 	case ModeSNI:
 		fallthrough
 	default:
+		// Conflict resolution: if record-fragment is also true, send records as chunks
 		if isRecordFrag {
 			chunks = recordsToSend
 		} else {
@@ -164,17 +253,24 @@ func (fc *fragConn) sendFragmented(record []byte) error {
 		}
 	}
 
-	// Step 3: Write TCP chunks with inter-packet delays
+	// Step 3: Write TCP chunks with inter-packet delays selected separately per segment pair
+	minI, maxI := fc.opt.IntervalRange(1, 5)
+	totalSent := 0
 	for cIdx, chunk := range chunks {
-		if cIdx > 0 && interval > 0 {
-			time.Sleep(interval)
+		if cIdx > 0 {
+			pause := fc.opt.RandomInterval(minI, maxI)
+			if pause > 0 {
+				time.Sleep(pause)
+			}
 		}
-		if _, err := fc.Conn.Write(chunk); err != nil {
-			return err
+		n, err := fc.Conn.Write(chunk)
+		totalSent += n
+		if err != nil {
+			return totalSent, err
 		}
 	}
 
-	return nil
+	return totalSent, nil
 }
 
 // splitRandom cuts data into chunks of random length within the configured range.
@@ -255,11 +351,5 @@ func setTCPNoDelay(c net.Conn) {
 		_ = nd.SetNoDelay(true)
 		return
 	}
-	if sc, ok := c.(syscall.Conn); ok {
-		if rc, err := sc.SyscallConn(); err == nil {
-			_ = rc.Control(func(fd uintptr) {
-				_ = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
-			})
-		}
-	}
+	setTCPNoDelayFallback(c)
 }

@@ -1,39 +1,50 @@
-# allah-verge
+<h1 align="center">
+  <img src="./src-tauri/icons/icon.png" alt="Clash" width="128" />
+  <br>
+  allah-verge
+</h1>
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Release](https://img.shields.io/github/v/release/mateika8814/allah-verge?include_prereleases)](https://github.com/mateika8814/allah-verge/releases)
+<p align="center">
+  <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3" /></a>
+  <a href="https://github.com/mateika8814/allah-verge/releases"><img src="https://img.shields.io/github/v/release/mateika8814/allah-verge?include_prereleases" alt="Release" /></a>
+</p>
 
-> **Forked by mateika8814** ([https://github.com/mateika8814](https://github.com/mateika8814))  
-> **Based on [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) (v2.5.9) and [mihomo](https://github.com/MetaCubeX/mihomo)**
+<h3 align="center">
+  Forked by <a href="https://github.com/mateika8814">mateika8814</a><br>
+  Based on <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> (v2.5.9, commit <code>ef784e459d31fe9d1946568b6fe47ac3a7e692b7</code>) and <a href="https://github.com/MetaCubeX/mihomo">mihomo</a> (commit <code>88dcbf7f1614a67c3b36b848ee3592dfa92ada36</code>) under GPLv3.
+</h3>
 
 ---
 
-## О проекте / Overview
+## Preview
 
-**allah-verge** — это открытый форк Clash Verge Rev со встроенной поддержкой фрагментации пакетов и записей TLS ClientHello для обхода блокировок методом глубокого анализа пакетов (DPI / ТСПУ).
+| Dark                             | Light                             |
+| -------------------------------- | --------------------------------- |
+| ![预览](./docs/preview_dark.png) | ![预览](./docs/preview_light.png) |
 
-### Что добавлено в форке
+---
+
+## TLS ClientHello Fragmentation (DPI / ТСПУ Bypass)
+
+Этот форк добавляет полноценную поддержку нарезки пакетов и TLS-записей ClientHello для обхода систем глубокого анализа пакетов (DPI / ТСПУ).
+
+### Что добавлено
 1. **Ядро (`core/`)**:
-   - Движок фрагментации `component/fragment`, оборачивающий исходящие TCP-соединения TLS-прокси.
-   - 4 режима работы: `sni`, `random`, `record_fragment`, `both`.
-   - Флаг `record-fragment` для совместимости.
-   - Настройка интервалов между пакетами (`interval`) в миллисекундах.
-   - RFC-совместимый парсер SNI без внешних библиотек.
-   - Логирование предупреждений при передаче неизвестного режима с автоматическим безопасным откатом к `sni`.
+   - Движок `component/fragment`, оборачивающий исходящие TCP-соединения TLS-нод.
+   - 4 режима нарезки: `sni`, `random`, `record_fragment`, `both`.
+   - Защита от ложного срабатывания: при первых байтах не-TLS потока или несовпадении заголовка ClientHello (проверка первых 6 байт) данные передаются прозрачно без задержки.
+   - Защита от зависания: настраиваемый таймаут буферизации (2 секунды) с автоматическим сбросом накопленных данных без утечек и гонок.
+   - Корректная обработка интервалов: независимый расчёт задержки для каждой пары отправляемых сегментов в заданном диапазоне `interval`.
+   - Кроссплатформенная поддержка: сборка и работа проверены на Linux, macOS (Darwin) и Windows.
 2. **Интерфейс (GUI)**:
-   - **Редактор ноды**: модальное окно «TLS Fragmentation» в списке прокси для индивидуальной настройки на уровне узла.
-   - **Глобальные настройки**: карточка «TLS Fragmentation» в `Settings -> Clash Setting` с переключателем «Apply to all TLS nodes».
-   - Валидация диапазонов (`length`, `interval`) и автоматическое скрытие настроек для не-TLS нод.
-   - Автоматическая инъекция параметров `fragment:` в runtime-конфиг ядра.
+   - Модальное окно «TLS Fragmentation» в списке прокси для индивидуальной настройки на уровне узла.
+   - Глобальная карточка «TLS Fragmentation» в `Settings -> Clash Setting` с опцией применения ко всем TLS-нодам.
+   - Автоматическая инъекция параметров в runtime-конфигурацию ядра.
 
----
-
-## Конфигурация / Configuration
-
-### Пример YAML ноды с `fragment`
+### Пример YAML ноды
 ```yaml
 proxies:
-  - name: "Finland-VLESS"
+  - name: "My-TLS-Node"
     type: vless
     server: 198.51.100.1
     port: 443
@@ -42,48 +53,53 @@ proxies:
     server-name: example.com
     fragment:
       enabled: true
-      mode: sni            # sni | random | record_fragment | both
-      length: 10-30        # размер частей в байтах (для random и both)
-      interval: 1-5        # пауза между отправками в мс (число или диапазон N-M)
-      record-fragment: false # опциональный флаг нарезки записей TLS
+      mode: sni              # Режим: sni (по умолчанию) | random | record_fragment | both
+      length: 10-30          # Размер фрагментов в байтах (для random и both)
+      interval: 1-5          # Пауза между отправками в мс (число или диапазон N-M)
+      record-fragment: false # Флаг нарезки записей TLS (для обратной совместимости)
 ```
 
-### Таблица режимов и обработка комбинаций
+### Таблица режимов и поведение
 
 | Режим (`mode`) | Поведение на проводе | Нарезка TCP | Нарезка записей TLS | `length` |
 | :--- | :--- | :---: | :---: | :---: |
-| `sni` | Разрезает TCP-сегмент точно по границе SNI (домен обрывается посередине) | Да | Нет | Игнорируется / опускается |
-| `random` | Разрезает TCP-сегмент на случайные фрагменты в пределах диапазона `length` | Да | Нет | Обязателен (например, `10-30`) |
-| `record_fragment` | Разделяет ClientHello на несколько записей TLS (Content Type 0x16) | Зависит от MTU | Да | Размер блоков записи |
-| `both` | Выполняет нарезку на уровне записей TLS **И** передаёт их отдельными TCP-пакетами с задержкой | Да | Да | Размер блоков (например, `10-30`) |
+| **`sni`** *(по умолчанию)* | Разрезает TCP-сегмент ClientHello точно по границе расширения SNI (имя домена обрывается посередине) | Да | Нет | Не требуется / опускается |
+| **`random`** | Разрезает ClientHello на случайные сегменты в пределах диапазона `length` | Да | Нет | Обязателен (например, `10-30`) |
+| **`record_fragment`** *(экспер.)* | Разделяет ClientHello на несколько валидных TLS-записей (Content Type 0x16) | Зависит от MTU | Да | Размер блоков записи |
+| **`both`** *(экспер.)* | Выполняет нарезку на уровне TLS-записей **И** нарезает их на отдельные TCP-пакеты с задержкой | Да | Да | Размер блоков (например, `10-30`) |
 
 #### Поведение при конфликтах комбинаций
-- Если указан флаг `record-fragment: true` совместно с `mode: sni` или `mode: random`, ядро включает нарезку на уровне записей TLS (комбинированный режим, аналогичный `both`).
-- Если передан неизвестный или некорректный режим, ядро пишет в лог предупреждение:  
-  `[Fragment] unknown fragmentation mode '<value>', falling back to 'sni'`  
-  и безопасно переключается на проверенный режим `sni`.
+- Если указан флаг `record-fragment: true` совместно с `mode: sni` или `mode: random`, флаг `record-fragment` имеет приоритет и активирует разделение на уровне TLS-записей.
+- Если режим не указан или передан пустой строкой, по умолчанию используется наиболее стабильный режим **`sni`**.
+- Если передано неизвестное значение `mode`, ядро пишет предупреждение в лог (`[Fragment] unknown fragmentation mode '...', falling back to 'sni'`) и безопасно переключается на режим `sni`.
+- **Экспериментальный статус**: режимы `record_fragment` и `both` создают множественные TLS-записи и на реальных серверах VLESS Reality могут приводить к сбросу рукопожатия, если сервер требует строгую единую запись в первом пакете. При возникновении проблем используйте стандартный режим `sni`.
+
+---
+
+## Install / Установка
+
+Готовые бинарные сборки форка доступны на странице релизов нашего проекта:  
+👉 **[Релизы allah-verge](https://github.com/mateika8814/allah-verge/releases)**
+
+> [!WARNING]
+> **Несовместимость со стоковыми версиями**: Стоковый Clash Verge Rev и оригинальное ядро Mihomo не поддерживают блок конфигурации `fragment:`. Для работы фрагментации необходимо использовать сборку из релизов этого форка или собрать ядро из папки `core/`.
 
 ---
 
 ## Сборка из исходников / Building
 
 ### 1. Сборка ядра (`core/`)
-Требуется Go 1.22+.
+Требуется Go 1.22+. Сборка кроссплатформенная (Windows, Linux, macOS):
 ```bash
 cd core
 go build -v -trimpath -ldflags "-s -w -buildid=" -tags with_gvisor -o verge-mihomo.exe .
 ```
 
 ### 2. Сборка GUI
-Требуются Node.js 18+, pnpm и Rust toolchain.
+Требуются Node.js 18+, pnpm и Rust toolchain:
 ```bash
-# Установка зависимостей
 pnpm install
-
-# Запуск в режиме разработки
 pnpm dev
-
-# Сборка приложения
 pnpm tauri build
 ```
 
@@ -93,22 +109,13 @@ pnpm tauri build
 
 ---
 
-## Загрузка и проверка контрольных сумм / Download & SHA256
-
-Готовая portable-сборка доступна в разделе [Releases](https://github.com/mateika8814/allah-verge/releases).
-
-### Проверка SHA256 в PowerShell
-```powershell
-Get-FileHash .\Clash-Verge-Rev-Portable-v2.5.9-Fragment-Fork.zip -Algorithm SHA256
-```
-Сверьте полученный хеш со значением в файле `SHA256SUMS.txt`.
-
----
-
 ## Синхронизация с апстримом / Updating from Upstream
 
-### Обновление GUI
 ```bash
+# Добавление апстрима
+git remote add upstream https://github.com/clash-verge-rev/clash-verge-rev.git
+
+# Получение обновлений GUI
 git fetch upstream
 git checkout dev
 git pull upstream dev
@@ -116,8 +123,7 @@ git checkout feature/tls-fragment
 git rebase dev
 ```
 
-### Обновление ядра по patch
-Все изменения ядра хранятся в виде чистого diff-патча [`core/fragment.patch`](./core/fragment.patch):
+Все изменения ядра зафиксированы в виде чистого патча [`core/fragment.patch`](./core/fragment.patch):
 ```bash
 cd core
 git apply fragment.patch
@@ -125,16 +131,41 @@ git apply fragment.patch
 
 ---
 
-## Честные ограничения / Limitations & Transparency
+## Честные ограничения / Limitations & Warranty
 
-- **Зависимость от провайдера**: Эффективность фрагментации против ТСПУ/DPI напрямую зависит от реализации DPI у конкретного оператора связи и его правил фильтрации. Никаких обещаний «100% гарантированного обхода» не даётся.
-- **Физический уровень**: Нарезка пакетов на физическом сетевом интерфейсе (Ethernet) подтверждена дампами Npcap/Wireshark для всех четырёх режимов (`sni`, `random`, `record_fragment`, `both`).
-- **Совместимость с Reality**: Режимы с несколькими TLS-записями (`record_fragment`, `both`) являются экспериментальными при работе с серверами VLESS Reality (uTLS), так как некоторые серверные реализации строго проверяют единую TLS-запись в первом пакете. При возникновении ошибок рукопожатия используйте режим `sni`.
+- **Зависимость от оператора**: Эффективность фрагментации против систем ТСПУ/DPI зависит от используемого провайдером оборудования и актуальных сигнатур фильтрации. Никаких гарантий «100% обхода всех блокировок» не предоставляется.
+- **Физический уровень**: Нарезка пакетов на физическом сетевом интерфейсе (Ethernet) подтверждена дампами Npcap/Wireshark.
+- **Отказ от гарантий (GPLv3)**: Программа предоставляется «КАК ЕСТЬ», без каких-либо явных или подразумеваемых гарантий, в том числе гарантий товарной пригодности или применимости для конкретных целей.
 
 ---
 
-## Исходный код и лицензия (GPLv3)
+## Features
 
-- Все релизные бинарники собраны строго из исходного кода данного репозитория на соответствующем теге релиза.
-- Исходный код распространяется на условиях лицензии **GNU General Public License v3.0**.
-- Подробная информация об авторских правах и апстримах приведена в файле [NOTICE.md](./NOTICE.md).
+- Основан на Rust и Tauri 2.
+- Встроенное ядро [mihomo](https://github.com/MetaCubeX/mihomo) с поддержкой фрагментации TLS ClientHello.
+- Удобный интерфейс с переключением светлой/тёмной темы и кастомными стилями.
+- Управление профилями (Merge, Script), подсветка синтаксиса.
+- Системный прокси, TUN-режим (виртуальная сетевая карта).
+- Редактирование правил и прокси.
+
+### FAQ
+
+Подробная документация доступна на [странице документации апстрима](https://clash-verge-rev.github.io/faq/windows.html).
+
+---
+
+## Acknowledgement
+
+Clash Verge Rev и allah-verge основаны на разработках следующих проектов:
+- [clash-verge-rev/clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev): Основной апстрим GUI.
+- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo): Ядро прокси и сетевого туннелирования.
+- [zzzgydi/clash-verge](https://github.com/zzzgydi/clash-verge): Исходный проект Clash Verge на Tauri.
+- [tauri-apps/tauri](https://github.com/tauri-apps/tauri): Фреймворк для настольных приложений.
+
+## Privacy
+
+allah-verge не собирает пользовательские данные. Конфигурации и журналы сохраняются исключительно локально на вашем устройстве.
+
+## License
+
+GNU General Public License v3.0. Подробности см. в файле [LICENSE](./LICENSE) и [NOTICE.md](./NOTICE.md).

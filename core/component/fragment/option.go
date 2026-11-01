@@ -28,11 +28,12 @@ const (
 
 // Option defines the fragment configuration per proxy node
 type Option struct {
-	Enabled        bool   `proxy:"enabled,omitempty" yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Mode           Mode   `proxy:"mode,omitempty" yaml:"mode,omitempty" json:"mode,omitempty"`
-	Length         string `proxy:"length,omitempty" yaml:"length,omitempty" json:"length,omitempty"`
-	Interval       string `proxy:"interval,omitempty" yaml:"interval,omitempty" json:"interval,omitempty"`
-	RecordFragment bool   `proxy:"record-fragment,omitempty" yaml:"record-fragment,omitempty" json:"record-fragment,omitempty"`
+	Enabled        bool          `proxy:"enabled,omitempty" yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Mode           Mode          `proxy:"mode,omitempty" yaml:"mode,omitempty" json:"mode,omitempty"`
+	Length         string        `proxy:"length,omitempty" yaml:"length,omitempty" json:"length,omitempty"`
+	Interval       string        `proxy:"interval,omitempty" yaml:"interval,omitempty" json:"interval,omitempty"`
+	RecordFragment bool          `proxy:"record-fragment,omitempty" yaml:"record-fragment,omitempty" json:"record-fragment,omitempty"`
+	BufferTimeout  time.Duration `proxy:"-" yaml:"-" json:"-"`
 }
 
 func (o *Option) GetMode() Mode {
@@ -55,6 +56,10 @@ func (o *Option) GetMode() Mode {
 	}
 }
 
+// IsRecordFragment returns whether TLS record splitting should be performed.
+// Conflict resolution:
+// If record-fragment: true is specified with mode: sni or mode: random,
+// record-fragment takes precedence and enables record splitting.
 func (o *Option) IsRecordFragment() bool {
 	if o == nil {
 		return false
@@ -67,33 +72,58 @@ func (o *Option) ParseLength(defMin, defMax int) (int, int) {
 	if o == nil || o.Length == "" {
 		return defMin, defMax
 	}
-	return parseRange(o.Length, defMin, defMax)
+	return parseRange(o.Length, defMin, defMax, false)
 }
 
-func (o *Option) ParseInterval(defMin, defMax int) time.Duration {
+func (o *Option) IntervalRange(defMin, defMax int) (int, int) {
 	if o == nil || o.Interval == "" {
-		return time.Duration(defMin) * time.Millisecond
+		return defMin, defMax
 	}
-	min, max := parseRange(o.Interval, defMin, defMax)
+	return parseRange(o.Interval, defMin, defMax, true)
+}
+
+func (o *Option) RandomInterval(min, max int) time.Duration {
+	if min <= 0 && max <= 0 {
+		return 0
+	}
 	ms := randomBetween(min, max)
+	if ms <= 0 {
+		return 0
+	}
 	return time.Duration(ms) * time.Millisecond
 }
 
-func parseRange(s string, defMin, defMax int) (int, int) {
+func (o *Option) ParseInterval(defMin, defMax int) time.Duration {
+	min, max := o.IntervalRange(defMin, defMax)
+	return o.RandomInterval(min, max)
+}
+
+func (o *Option) GetBufferTimeout() time.Duration {
+	if o != nil && o.BufferTimeout > 0 {
+		return o.BufferTimeout
+	}
+	return 2 * time.Second
+}
+
+func parseRange(s string, defMin, defMax int, allowZero bool) (int, int) {
 	if s == "" {
 		return defMin, defMax
+	}
+	minBound := 1
+	if allowZero {
+		minBound = 0
 	}
 	parts := strings.Split(s, "-")
 	if len(parts) == 1 {
 		v, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-		if err != nil || v <= 0 {
+		if err != nil || v < minBound {
 			return defMin, defMax
 		}
 		return v, v
 	}
 	v1, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
 	v2, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err1 != nil || err2 != nil || v1 <= 0 || v2 <= 0 {
+	if err1 != nil || err2 != nil || v1 < minBound || v2 < minBound {
 		return defMin, defMax
 	}
 	if v1 > v2 {

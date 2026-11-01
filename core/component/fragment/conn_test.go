@@ -489,3 +489,256 @@ func TestFragConn_UnknownMode(t *testing.T) {
 		t.Fatalf("Expected fallback to ModeSNI for unknown mode, got %v", mode)
 	}
 }
+
+func TestFragConn_NonTLS_StartingWith1603(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	opt := &Option{
+		Enabled:  true,
+		Mode:     ModeSNI,
+		Interval: "1-2",
+	}
+
+	fc := NewConn(clientConn, opt)
+
+	received := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		n, _ := serverConn.Read(buf)
+		res := make([]byte, n)
+		copy(res, buf[:n])
+		received <- res
+	}()
+
+	// Fake non-TLS payload: starts with 0x16 0x03, but byte 5 is 0x99 (!= 0x01) and recLen=0xffff > 16384
+	nonTLSPkt := []byte{0x16, 0x03, 0xff, 0xff, 0x00, 0x99, 0xde, 0xad, 0xbe, 0xef}
+	n, err := fc.Write(nonTLSPkt)
+	if err != nil || n != len(nonTLSPkt) {
+		t.Fatalf("Expected non-TLS write to succeed immediately, n=%d err=%v", n, err)
+	}
+
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, nonTLSPkt) {
+			t.Fatalf("Expected payload to pass through unchanged, got %x, expected %x", got, nonTLSPkt)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Non-TLS payload starting with 16 03 timed out / blocked")
+	}
+}
+
+func TestFragConn_BufferingTimeout(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	opt := &Option{
+		Enabled:       true,
+		Mode:          ModeSNI,
+		BufferTimeout: 50 * time.Millisecond,
+	}
+
+	fc := NewConn(clientConn, opt)
+
+	received := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		n, _ := serverConn.Read(buf)
+		res := make([]byte, n)
+		copy(res, buf[:n])
+		received <- res
+	}()
+
+	// Partial write: 5 bytes of header claiming length 0x50, but no further bytes ever sent
+	partial := []byte{0x16, 0x03, 0x01, 0x00, 0x50}
+	n, err := fc.Write(partial)
+	if err != nil || n != len(partial) {
+		t.Fatalf("Initial write failed: n=%d err=%v", n, err)
+	}
+
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, partial) {
+			t.Fatalf("Expected buffered data to flush after timeout, got %x, expected %x", got, partial)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Buffering timeout failed to flush accumulated data")
+	}
+}
+
+func TestFragConn_CloseWithBufferedData(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	opt := &Option{
+		Enabled:       true,
+		Mode:          ModeSNI,
+		BufferTimeout: 5 * time.Second,
+	}
+
+	fc := NewConn(clientConn, opt)
+
+	received := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		n, _ := serverConn.Read(buf)
+		res := make([]byte, n)
+		copy(res, buf[:n])
+		received <- res
+	}()
+
+	partial := []byte{0x16, 0x03, 0x01, 0x00}
+	_, _ = fc.Write(partial)
+
+	// Close immediately with non-empty buffer
+	err := fc.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, partial) {
+			t.Fatalf("Expected buffered data to be flushed on Close, got %x, expected %x", got, partial)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Close failed to deliver buffered data")
+	}
+}
+
+func TestFragConn_Conflict_RandomWithRecordFragment(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	sni := "conflict-random-rf.example.com"
+	pkt := makeClientHello(sni, true)
+
+	// Conflict configuration: Mode is Random, but RecordFragment is also set to true
+	opt := &Option{
+		Enabled:        true,
+		Mode:           ModeRandom,
+		Length:         "10-20",
+		Interval:       "1-2",
+		RecordFragment: true,
+	}
+
+	fc := NewConn(clientConn, opt)
+
+	receivedChunks := make(chan []byte, 20)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := serverConn.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				receivedChunks <- chunk
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	n, err := fc.Write(pkt)
+	if err != nil || n != len(pkt) {
+		t.Fatalf("Write failed: n=%d err=%v", n, err)
+	}
+	clientConn.Close()
+	<-done
+	close(receivedChunks)
+
+	var chunks [][]byte
+	for c := range receivedChunks {
+		chunks = append(chunks, c)
+	}
+
+	// Should produce multiple chunks (> 2) combining record splitting and random chunks
+	if len(chunks) < 3 {
+		t.Fatalf("Expected at least 3 chunks in Random+RecordFragment mode, got %d", len(chunks))
+	}
+
+	full := bytes.Join(chunks, nil)
+	tlsHeaderCount := 0
+	for i := 0; i < len(full)-2; i++ {
+		if full[i] == 0x16 && full[i+1] == 0x03 {
+			tlsHeaderCount++
+		}
+	}
+	if tlsHeaderCount < 2 {
+		t.Fatalf("Expected at least 2 TLS record headers when RecordFragment=true, found %d", tlsHeaderCount)
+	}
+}
+
+func TestFragConn_Conflict_SNIWithRecordFragment(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	sni := "conflict-sni-rf.example.com"
+	pkt := makeClientHello(sni, true)
+
+	// Conflict configuration: Mode is SNI, but RecordFragment is also set to true
+	opt := &Option{
+		Enabled:        true,
+		Mode:           ModeSNI,
+		Interval:       "1-2",
+		RecordFragment: true,
+	}
+
+	fc := NewConn(clientConn, opt)
+
+	receivedChunks := make(chan []byte, 10)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := serverConn.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				receivedChunks <- chunk
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	n, err := fc.Write(pkt)
+	if err != nil || n != len(pkt) {
+		t.Fatalf("Write failed: n=%d err=%v", n, err)
+	}
+	clientConn.Close()
+	<-done
+	close(receivedChunks)
+
+	var chunks [][]byte
+	for c := range receivedChunks {
+		chunks = append(chunks, c)
+	}
+
+	// RecordFragment takes precedence: splits into 2 TLS records
+	if len(chunks) < 2 {
+		t.Fatalf("Expected at least 2 chunks in SNI+RecordFragment mode, got %d", len(chunks))
+	}
+
+	full := bytes.Join(chunks, nil)
+	tlsHeaderCount := 0
+	for i := 0; i < len(full)-2; i++ {
+		if full[i] == 0x16 && full[i+1] == 0x03 {
+			tlsHeaderCount++
+		}
+	}
+	if tlsHeaderCount < 2 {
+		t.Fatalf("Expected at least 2 TLS records when RecordFragment=true, found %d", tlsHeaderCount)
+	}
+}
