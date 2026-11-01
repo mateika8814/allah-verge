@@ -742,3 +742,212 @@ func TestFragConn_Conflict_SNIWithRecordFragment(t *testing.T) {
 		t.Fatalf("Expected at least 2 TLS records when RecordFragment=true, found %d", tlsHeaderCount)
 	}
 }
+
+
+func TestFragConn_RealTCP_SegmentationAndIntegrity(t *testing.T) {
+	// Real TCP listener on local loopback to verify kernel-level TCP stack behavior
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on real TCP socket: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	pkt := makeClientHello("real-tcp-verification.com", true)
+
+	type segmentInfo struct {
+		data []byte
+		at   time.Time
+	}
+	serverDone := make(chan []segmentInfo, 1)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			serverDone <- nil
+			return
+		}
+		defer conn.Close()
+
+		var segs []segmentInfo
+		buf := make([]byte, 4096)
+		totalRead := 0
+
+		for totalRead < len(pkt) {
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			n, err := conn.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				segs = append(segs, segmentInfo{
+					data: chunk,
+					at:   time.Now(),
+				})
+				totalRead += n
+			}
+			if err != nil {
+				break
+			}
+		}
+		serverDone <- segs
+	}()
+
+	rawConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("failed to dial real TCP socket: %v", err)
+	}
+	defer rawConn.Close()
+
+	opt := &Option{
+		Enabled:  true,
+		Mode:     ModeSNI,
+		Interval: "25-35", // 25-35ms pause between segments
+	}
+	fc := NewConn(rawConn, opt)
+
+	start := time.Now()
+	n, err := fc.Write(pkt)
+	if err != nil || n != len(pkt) {
+		t.Fatalf("Write on real TCP failed: n=%d, err=%v", n, err)
+	}
+	writeElapsed := time.Since(start)
+
+	select {
+	case segs := <-serverDone:
+		if segs == nil {
+			t.Fatal("server accept failed")
+		}
+		var full []byte
+		for _, s := range segs {
+			full = append(full, s.data...)
+		}
+		if !bytes.Equal(full, pkt) {
+			t.Fatalf("Reassembled payload on real TCP does not match original! got %d bytes, want %d", len(full), len(pkt))
+		}
+
+		if len(segs) < 2 {
+			t.Logf("Notice: kernel coalesced reads (received %d segments), writeElapsed=%v", len(segs), writeElapsed)
+		} else {
+			gap := segs[1].at.Sub(segs[0].at)
+			t.Logf("Real TCP: received in %d segments with gap=%v", len(segs), gap)
+		}
+
+		if writeElapsed < 20*time.Millisecond {
+			t.Errorf("writeElapsed (%v) was too fast, expected inter-packet pause", writeElapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for server")
+	}
+}
+
+func TestFragConn_SingleByte16ThenRest(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	pkt := makeClientHello("single-byte-test.com", true)
+	opt := &Option{
+		Enabled:  true,
+		Mode:     ModeSNI,
+		Interval: "5-10",
+	}
+	fc := NewConn(clientConn, opt)
+
+	go func() {
+		// Send initial byte 0x16 only
+		n, err := fc.Write(pkt[:1])
+		if err != nil || n != 1 {
+			t.Errorf("Initial 1-byte write failed: n=%d, err=%v", n, err)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+
+		// Send the remaining bytes
+		n, err = fc.Write(pkt[1:])
+		if err != nil || n != len(pkt)-1 {
+			t.Errorf("Remaining write failed: n=%d, err=%v", n, err)
+			return
+		}
+	}()
+
+	buf := make([]byte, len(pkt))
+	_, err := io.ReadFull(serverConn, buf)
+	if err != nil {
+		t.Fatalf("ReadFull failed: %v", err)
+	}
+	if !bytes.Equal(buf, pkt) {
+		t.Fatalf("Data mismatch when first write is single byte 0x16")
+	}
+}
+
+func TestFragConn_SingleByteNonTLS(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	opt := &Option{
+		Enabled: true,
+		Mode:    ModeSNI,
+	}
+	fc := NewConn(clientConn, opt)
+
+	nonTLS := []byte("GET /index.html HTTP/1.1\r\n\r\n")
+
+	go func() {
+		// First byte 'G' (not 0x16)
+		n, err := fc.Write(nonTLS[:1])
+		if err != nil || n != 1 {
+			t.Errorf("Single non-TLS byte write failed: n=%d, err=%v", n, err)
+			return
+		}
+		// Remaining bytes
+		_, _ = fc.Write(nonTLS[1:])
+	}()
+
+	buf := make([]byte, len(nonTLS))
+	_, err := io.ReadFull(serverConn, buf)
+	if err != nil {
+		t.Fatalf("ReadFull failed: %v", err)
+	}
+	if !bytes.Equal(buf, nonTLS) {
+		t.Fatalf("Non-TLS data altered: got %q, want %q", string(buf), string(nonTLS))
+	}
+}
+
+func TestFragConn_SingleByte16ThenNon03(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	opt := &Option{
+		Enabled: true,
+		Mode:    ModeSNI,
+	}
+	fc := NewConn(clientConn, opt)
+
+	mixedData := []byte{0x16, 0xFF, 0xAA, 0xBB}
+
+	go func() {
+		// First byte 0x16
+		n, err := fc.Write(mixedData[:1])
+		if err != nil || n != 1 {
+			t.Errorf("First write failed: n=%d, err=%v", n, err)
+			return
+		}
+		// Second write: non-0x03 second byte
+		n, err = fc.Write(mixedData[1:])
+		if err != nil || n != len(mixedData)-1 {
+			t.Errorf("Second write failed: n=%d, err=%v", n, err)
+			return
+		}
+	}()
+
+	buf := make([]byte, len(mixedData))
+	_, err := io.ReadFull(serverConn, buf)
+	if err != nil {
+		t.Fatalf("ReadFull failed: %v", err)
+	}
+	if !bytes.Equal(buf, mixedData) {
+		t.Fatalf("Data mismatch: got %x, want %x", buf, mixedData)
+	}
+}

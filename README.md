@@ -78,8 +78,15 @@ proxies:
 
 ## Install / Установка
 
-Готовые бинарные сборки форка доступны на странице релизов нашего проекта:  
-👉 **[Релизы allah-verge](https://github.com/mateika8814/allah-verge/releases)**
+Готовые бинарные сборки форка (включая **Setup-инсталлятор** и **Portable-архив**) опубликованы на странице релизов:  
+👉 **[Релизы allah-verge на GitHub](https://github.com/mateika8814/allah-verge/releases)**
+
+- **v2.5.9-fragment.2**:
+  - `Clash-Verge-Rev-Setup-v2.5.9-Fragment-Fork-2.exe` — полноценный установщик для Windows (выбор каталога, ярлыки, автозапуск, деинсталлятор).
+  - `Clash-Verge-Rev-Portable-v2.5.9-Fragment-Fork-2.zip` — портативная версия, готовая к запуску без установки.
+  - `SHA256SUMS.txt` — контрольные суммы файлов.
+- **v2.5.9-fragment.1**:
+  - Базовый релиз движка фрагментации.
 
 > [!WARNING]
 > **Несовместимость со стоковыми версиями**: Стоковый Clash Verge Rev и оригинальное ядро Mihomo не поддерживают блок конфигурации `fragment:`. Для работы фрагментации необходимо использовать сборку из релизов этого форка или собрать ядро из папки `core/`.
@@ -88,11 +95,22 @@ proxies:
 
 ## Сборка из исходников / Building
 
-### 1. Сборка ядра (`core/`)
-Требуется Go 1.22+. Сборка кроссплатформенная (Windows, Linux, macOS):
+### 1. Кроссплатформенная сборка ядра (`core/`)
+Требуется Go 1.22+. Ядро поддерживает Windows, Linux и macOS:
+
 ```bash
 cd core
+
+# Windows (x86_64):
 go build -v -trimpath -ldflags "-s -w -buildid=" -tags with_gvisor -o verge-mihomo.exe .
+
+# Linux (x86_64 / arm64):
+GOOS=linux GOARCH=amd64 go build -v -trimpath -ldflags "-s -w -buildid=" -tags with_gvisor -o verge-mihomo .
+GOOS=linux GOARCH=arm64 go build -v -trimpath -ldflags "-s -w -buildid=" -tags with_gvisor -o verge-mihomo-linux-arm64 .
+
+# macOS (Apple Silicon arm64 / Intel amd64):
+GOOS=darwin GOARCH=arm64 go build -v -trimpath -ldflags "-s -w -buildid=" -tags with_gvisor -o verge-mihomo-darwin-arm64 .
+GOOS=darwin GOARCH=amd64 go build -v -trimpath -ldflags "-s -w -buildid=" -tags with_gvisor -o verge-mihomo-darwin-amd64 .
 ```
 
 ### 2. Сборка GUI
@@ -104,21 +122,31 @@ pnpm tauri build
 ```
 
 ### 3. Подстановка ядра (Sidecar)
-- Для portable-версии: поместите собранный `verge-mihomo.exe` в корень папки приложения рядом с `clash-verge.exe`.
-- Для сборки инсталлятора: поместите бинарник в `src-tauri/sidecar/verge-mihomo-x86_64-pc-windows-msvc.exe`.
+Для корректной сборки Tauri ожидает бинарник ядра в каталоге `src-tauri/sidecar/` под именем, соответствующим целевой платформе:
+- **Windows (x86_64)**: `src-tauri/sidecar/verge-mihomo-x86_64-pc-windows-msvc.exe`
+- **Linux (x86_64)**: `src-tauri/sidecar/verge-mihomo-x86_64-unknown-linux-gnu`
+- **macOS (Apple Silicon)**: `src-tauri/sidecar/verge-mihomo-aarch64-apple-darwin`
+- **macOS (Intel)**: `src-tauri/sidecar/verge-mihomo-x86_64-apple-darwin`
+
+*Для portable-сборки Windows достаточно поместить `verge-mihomo.exe` в корень папки приложения рядом с `clash-verge.exe`.*
 
 ---
 
 ## Синхронизация с апстримом / Updating from Upstream
 
+Основная рабочая ветка форка — **`dev`** (соответствует ветке разработки Clash Verge Rev):
+
 ```bash
-# Добавление апстрима
+# Добавление удалённого репозитория апстрима:
 git remote add upstream https://github.com/clash-verge-rev/clash-verge-rev.git
 
-# Получение обновлений GUI
+# Получение обновлений апстрима в ветку dev форка:
 git fetch upstream
 git checkout dev
-git pull upstream dev
+git merge upstream/dev
+
+# При работе в изолированной ветке (например, feature/tls-fragment):
+# (если ветка ещё не отслеживается локально: git checkout -b feature/tls-fragment origin/feature/tls-fragment)
 git checkout feature/tls-fragment
 git rebase dev
 ```

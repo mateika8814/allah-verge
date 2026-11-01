@@ -22,6 +22,7 @@ type fragConn struct {
 	mu           sync.Mutex
 	fragmentDone bool
 	closed       bool
+	lastErr      error
 	timer        *time.Timer
 }
 
@@ -35,6 +36,22 @@ func NewConn(c net.Conn, opt *Option) net.Conn {
 		Conn: c,
 		opt:  *opt,
 	}
+}
+
+// writeAll writes data in a loop, guaranteeing all bytes are written or returning an error.
+func (fc *fragConn) writeAll(data []byte) (int, error) {
+	total := 0
+	for len(data) > 0 {
+		n, err := fc.Conn.Write(data)
+		if n > 0 {
+			total += n
+			data = data[n:]
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 func (fc *fragConn) resetTimer() {
@@ -64,12 +81,29 @@ func (fc *fragConn) onBufferTimeout() {
 	toWrite := fc.buf
 	fc.buf = nil
 
-	_, _ = fc.Conn.Write(toWrite)
+	_, err := fc.writeAll(toWrite)
+	if err != nil {
+		fc.lastErr = err
+	}
+}
+
+func (fc *fragConn) Read(p []byte) (int, error) {
+	fc.mu.Lock()
+	err := fc.lastErr
+	fc.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	return fc.Conn.Read(p)
 }
 
 func (fc *fragConn) Write(p []byte) (int, error) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+
+	if fc.lastErr != nil {
+		return 0, fc.lastErr
+	}
 
 	// If fragmentation was already completed or disabled, pass through transparently
 	if fc.fragmentDone || !fc.opt.Enabled {
@@ -77,18 +111,56 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 	}
 
 	// Fast-path / safety check:
-	// If the initial bytes are not a TLS Handshake (0x16 0x03), this is not a TLS ClientHello.
-	// Mark as done immediately and forward as-is.
+	// A TLS ClientHello record begins with:
+	// byte 0: ContentType = 0x16 (Handshake)
+	// byte 1-2: ProtocolVersion = 0x03 0x01..0x03
 	if len(fc.buf) == 0 {
-		if len(p) < 2 || p[0] != 0x16 || p[1] != 0x03 {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		// If the very first byte is not 0x16, this cannot be a TLS Handshake record.
+		if p[0] != 0x16 {
 			fc.fragmentDone = true
 			fc.stopTimer()
 			return fc.Conn.Write(p)
 		}
+		// If at least 2 bytes are provided and byte 1 is not 0x03, this is not TLS.
+		if len(p) >= 2 && p[1] != 0x03 {
+			fc.fragmentDone = true
+			fc.stopTimer()
+			return fc.Conn.Write(p)
+		}
+		// If exactly 1 byte was written (0x16), buffer it and wait for subsequent bytes.
 	}
 
 	prevLen := len(fc.buf)
 	fc.buf = append(fc.buf, p...)
+
+	// If only 1 byte (0x16) is buffered so far, start timer and wait for the second byte
+	if len(fc.buf) < 2 {
+		fc.resetTimer()
+		return len(p), nil
+	}
+
+	// If the second byte is not 0x03, it's not a TLS Handshake record -> flush immediately as-is
+	if fc.buf[1] != 0x03 {
+		fc.stopTimer()
+		fc.fragmentDone = true
+		toWrite := fc.buf
+		fc.buf = nil
+		nSent, err := fc.writeAll(toWrite)
+		n := nSent - prevLen
+		if n < 0 {
+			n = 0
+		}
+		if n > len(p) {
+			n = len(p)
+		}
+		if err != nil {
+			fc.lastErr = err
+		}
+		return n, err
+	}
 
 	// False-positive protection on non-TLS streams:
 	// As soon as at least 6 bytes are buffered, verify that byte 5 is 0x01 (ClientHello)
@@ -101,13 +173,16 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 			fc.fragmentDone = true
 			toWrite := fc.buf
 			fc.buf = nil
-			nSent, err := fc.Conn.Write(toWrite)
+			nSent, err := fc.writeAll(toWrite)
 			n := nSent - prevLen
 			if n < 0 {
 				n = 0
 			}
 			if n > len(p) {
 				n = len(p)
+			}
+			if err != nil {
+				fc.lastErr = err
 			}
 			return n, err
 		}
@@ -149,12 +224,13 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 		if n > len(p) {
 			n = len(p)
 		}
+		fc.lastErr = err
 		return n, err
 	}
 
 	// If there were any extra bytes buffered beyond the ClientHello record, send them directly
 	if len(extraBytes) > 0 {
-		nExtra, err := fc.Conn.Write(extraBytes)
+		nExtra, err := fc.writeAll(extraBytes)
 		if err != nil {
 			n := (nFrag + nExtra) - prevLen
 			if n < 0 {
@@ -163,6 +239,7 @@ func (fc *fragConn) Write(p []byte) (int, error) {
 			if n > len(p) {
 				n = len(p)
 			}
+			fc.lastErr = err
 			return n, err
 		}
 	}
@@ -178,14 +255,18 @@ func (fc *fragConn) Close() error {
 		fc.fragmentDone = true
 		toWrite := fc.buf
 		fc.buf = nil
-		_, flushErr = fc.Conn.Write(toWrite)
+		_, flushErr = fc.writeAll(toWrite)
 	}
 	fc.closed = true
+	lastErr := fc.lastErr
 	fc.mu.Unlock()
 
 	closeErr := fc.Conn.Close()
 	if flushErr != nil {
 		return flushErr
+	}
+	if lastErr != nil {
+		return lastErr
 	}
 	return closeErr
 }
@@ -193,7 +274,7 @@ func (fc *fragConn) Close() error {
 func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 	// Fallback check: if record is corrupted or too short, write as-is
 	if len(record) < 5 || record[0] != 0x16 || record[1] != 0x03 {
-		return fc.Conn.Write(record)
+		return fc.writeAll(record)
 	}
 
 	mode := fc.opt.GetMode()
@@ -263,7 +344,7 @@ func (fc *fragConn) sendFragmented(record []byte) (int, error) {
 				time.Sleep(pause)
 			}
 		}
-		n, err := fc.Conn.Write(chunk)
+		n, err := fc.writeAll(chunk)
 		totalSent += n
 		if err != nil {
 			return totalSent, err
